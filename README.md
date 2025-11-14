@@ -28,6 +28,22 @@ Requisitos
 - (Opcional) Docker + Docker Compose para deploy rápido
 - Acesso SNMP aos equipamentos e, se usar NetBox, URL + Token
 
+Instalação automatizada (Docker ou bare-metal)
+---------------------------------------------
+Para reproduzir o ambiente validado (Docker + Portainer ou bare-metal com systemd), use o novo script interativo:
+
+```bash
+sudo ./scripts/deploy_netbox_ops_center_docker.sh
+```
+
+O assistente pergunta:
+
+1. **Modo Docker** – instala Docker Engine + compose plugin, Portainer CE (8000/9443) e prepara o repositório em `/opt/netbox-ops-center` (ou caminho informado). Gera `.env`, `server/.env` e um `docker-compose.yml` atualizado com `node:20-bullseye`, aplica `npm install`/`npm run server:install` automaticamente dentro do container e sobe o stack com `npm run dev:stack`. Após o `docker compose up -d`, o script valida o acesso HTTP (`curl http://localhost:<porta>`), mostra `docker compose ps` e informa URLs finais.
+
+2. **Modo bare-metal** – instala Node.js 20 via NodeSource (se necessário), cria o usuário de serviço `netboxops`, clona o projeto, executa `npm install`, `npm run server:install`, `npm run db:push`, e gera um serviço systemd (`/etc/systemd/system/netbox-ops-center.service`) que roda `npm run dev:stack`. O script aguarda o HTTP responder (`http://localhost:8080`), habilita o serviço no boot e informa como acompanhar logs.
+
+Ambos os fluxos reutilizam o mesmo repositório e arquivos `.env`, além de realizarem testes automáticos (curl) para garantir que a UI responda após a instalação. Escolha a opção que melhor se encaixa no seu cenário (laboratório rápido com containers ou execução direta no host).
+
 Instalação (desenvolvimento)
 1) Dependências e envs
    - cp .env.example .env

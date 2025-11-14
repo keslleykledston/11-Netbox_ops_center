@@ -25,11 +25,54 @@ detect_compose() {
   fi
 }
 
+# Ensure docker and compose are available (auto-install on Debian/Ubuntu if possible)
 need_cmd git
-need_cmd docker
+if ! command -v docker >/dev/null 2>&1; then
+  echo "[!] Docker not found. Attempting to install..."
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y || true
+    apt-get install -y ca-certificates curl gnupg lsb-release || true
+    # Try official convenience script (handles engine and compose plugin on recent distros)
+    if curl -fsSL https://get.docker.com | sh; then
+      echo "[+] Docker installed via get.docker.com"
+    else
+      echo "[!] Fallback to distro packages"
+      apt-get install -y docker.io || true
+    fi
+  else
+    echo "[-] Cannot auto-install Docker (apt-get not found). Please install Docker manually."
+  fi
+fi
+
 COMPOSE_CMD=$(detect_compose)
 if [[ -z "${COMPOSE_CMD}" ]]; then
-  echo "[-] Docker Compose v2 or docker-compose not found. Please install Docker Desktop (or docker compose plugin)."
+  echo "[!] Docker Compose not found. Attempting to install compose plugin..."
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y || true
+    apt-get install -y docker-compose-plugin || true
+    COMPOSE_CMD=$(detect_compose)
+  fi
+fi
+
+if [[ -z "${COMPOSE_CMD}" ]]; then
+  # Last-resort: install standalone docker-compose v2 binary
+  if command -v curl >/dev/null 2>&1; then
+    ver="v2.27.0"
+    bin="/usr/local/bin/docker-compose"
+    arch=$(uname -m)
+    os=$(uname -s)
+    echo "[!] Installing standalone docker-compose ${ver} to ${bin}"
+    curl -fsSL -o "${bin}" "https://github.com/docker/compose/releases/download/${ver}/docker-compose-${os}-${arch}" && chmod +x "${bin}" || true
+    if command -v docker-compose >/dev/null 2>&1; then
+      COMPOSE_CMD="docker-compose"
+    fi
+  fi
+fi
+
+if [[ -z "${COMPOSE_CMD}" ]]; then
+  echo "[-] Docker Compose v2 or docker-compose not found. Please install Docker Desktop or the compose plugin (docker-compose-plugin)."
   exit 1
 fi
 
@@ -112,4 +155,3 @@ echo "Useful commands:"
 echo "  - Stop:   ${COMPOSE_CMD} -f ${APP_DIR}/docker-compose.yml down"
 echo "  - Logs:   ${COMPOSE_CMD} -f ${APP_DIR}/docker-compose.yml logs -f"
 echo "  - Rebuild:${COMPOSE_CMD} -f ${APP_DIR}/docker-compose.yml up -d --build"
-

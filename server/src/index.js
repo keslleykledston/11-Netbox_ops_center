@@ -1,0 +1,1097 @@
+import "dotenv/config";
+import express from "express";
+import cors from "cors";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import { PrismaClient } from "@prisma/client";
+import { syncFromNetbox, getNetboxCatalog } from "./netbox.js";
+import { encryptSecret, decryptSecret } from "./cred.js";
+
+const prisma = new PrismaClient();
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 4000;
+const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
+
+// Simple startup validation and summary
+(() => {
+  const dbUrl = process.env.DATABASE_URL || "(default in schema: sqlite file:./dev.db)";
+  const nbUrl = process.env.NETBOX_URL;
+  const nbToken = process.env.NETBOX_TOKEN;
+  const nbGroup = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
+  const jsUrl = process.env.JUMPSERVER_URL;
+  const jsToken = process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY;
+
+  console.log("[ENV] API PORT=", PORT);
+  console.log("[ENV] DATABASE_URL=", dbUrl);
+  console.log("[ENV] NETBOX_TENANT_GROUP_FILTER=", nbGroup);
+
+  if (!nbUrl) console.warn("[ENV][WARN] NETBOX_URL not set — NetBox sync will require url in request body.");
+  if (!nbToken) console.warn("[ENV][WARN] NETBOX_TOKEN not set — NetBox sync will require token in request body.");
+  if (!jsUrl) console.warn("[ENV][WARN] JUMPSERVER_URL not set — Jumpserver tests will require url in request body.");
+  if (!jsToken) console.warn("[ENV][WARN] JUMPSERVER_TOKEN/API_KEY not set — Jumpserver tests may respond unauthorized unless provided in body.");
+  if (JWT_SECRET === "dev_secret") console.warn("[ENV][WARN] Using default JWT secret — set JWT_SECRET in production.");
+})();
+
+// Background bootstrap tasks
+async function ensureDefaultTenant() {
+  try {
+    const existing = await prisma.tenant.findUnique({ where: { name: 'default' } });
+    if (!existing) {
+      await prisma.tenant.create({ data: { name: 'default', description: 'Default tenant' } });
+      console.log('[BOOT] Created default tenant');
+    }
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultTenant failed:', String(e?.message || e));
+  }
+}
+
+async function lookupAsnName(asn) {
+  const enabled = (process.env.ASN_LOOKUP_ENABLED || 'true').toLowerCase() !== 'false';
+  if (!enabled) return null;
+  const endpoints = [];
+  const tpl = process.env.ASN_LOOKUP_URL || '';
+  if (tpl.includes('{asn}')) endpoints.push(tpl.replace('{asn}', String(asn)));
+  // fallbacks
+  endpoints.push(`https://api.bgpview.io/asn/${asn}`);
+  endpoints.push(`https://rdap.apnic.net/autnum/${asn}`);
+  for (const url of endpoints) {
+    try {
+      const r = await fetch(url, { method: 'GET' });
+      if (!r.ok) continue;
+      const ct = (r.headers.get('content-type') || '').toLowerCase();
+      if (!ct.includes('application/json')) continue;
+      const j = await r.json();
+      // bgpview
+      if (j?.data?.name) return String(j.data.name);
+      // rdap
+      if (j?.name) return String(j.name);
+      if (j?.entities && Array.isArray(j.entities)) {
+        const v = j.entities.find((e) => e?.vcardArray && Array.isArray(e.vcardArray));
+        const card = v?.vcardArray?.[1];
+        const fn = Array.isArray(card) ? card.find((x) => x?.[0] === 'fn') : null;
+        if (fn && fn[3]) return String(fn[3]);
+      }
+    } catch {}
+  }
+  return null;
+}
+
+async function refreshAsnRegistryFromPeers() {
+  try {
+    const peers = await prisma.discoveredBgpPeer.findMany({ select: { asn: true } });
+    const unique = Array.from(new Set(peers.map((p) => Number(p.asn || 0)).filter((n) => Number.isFinite(n) && n > 0)));
+    if (unique.length === 0) return;
+    const existing = await prisma.asnRegistry.findMany({ where: { asn: { in: unique } } });
+    const known = new Set(existing.map((e) => Number(e.asn)));
+    const toLookup = unique.filter((n) => !known.has(n));
+    for (const asn of toLookup) {
+      const name = await lookupAsnName(asn);
+      if (name) {
+        await prisma.asnRegistry.upsert({ where: { asn }, update: { name }, create: { asn, name } });
+        console.log(`[ASN] Resolved AS${asn} => ${name}`);
+      }
+    }
+    // Update peers with resolved names
+    const reg = await prisma.asnRegistry.findMany({ where: { asn: { in: unique } } });
+    const map = new Map(reg.map(r => [Number(r.asn), r.name]));
+    for (const asn of unique) {
+      const name = map.get(asn) || null;
+      if (name) {
+        await prisma.discoveredBgpPeer.updateMany({ where: { asn }, data: { asnName: name } });
+      }
+    }
+  } catch (e) {
+    console.warn('[BOOT][WARN] refreshAsnRegistryFromPeers failed:', String(e?.message || e));
+  }
+}
+
+async function bootstrapBackground() {
+  await ensureDefaultTenant();
+  // Kick off ASN refresh in background (non-blocking)
+  refreshAsnRegistryFromPeers();
+}
+
+async function logAudit(req, action, detailsObj) {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        userId: req?.user?.sub ? String(req.user.sub) : null,
+        userRole: req?.user?.role || null,
+        tenantId: req?.user?.tenantId || null,
+        action,
+        details: detailsObj ? JSON.stringify(detailsObj) : null,
+      },
+    });
+  } catch (e) {
+    console.warn("[AUDIT][WARN]", String(e?.message || e));
+  }
+}
+
+function signToken(user) {
+  return jwt.sign(
+    { sub: user.id, tenantId: user.tenantId || null, role: user.role },
+    JWT_SECRET,
+    { expiresIn: "12h" }
+  );
+}
+
+function requireAuth(req, res, next) {
+  const h = req.headers.authorization || "";
+  const [scheme, token] = h.split(" ");
+  if (scheme === "Bearer" && token) {
+    try {
+      req.user = jwt.verify(token, JWT_SECRET);
+      return next();
+    } catch {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+  }
+  return res.status(401).json({ error: "Unauthorized" });
+}
+
+function requireScopeOrAdmin(req, res, next) {
+  if (req.user?.tenantId) return next();
+  if (req.user?.role === "admin") return next();
+  return res.status(403).json({ error: "Forbidden" });
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user?.role === "admin") return next();
+  return res.status(403).json({ error: "Admin only" });
+}
+
+app.get("/health", (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.post("/auth/register", async (req, res) => {
+  const { email, password, username, tenantName } = req.body || {};
+  if (!email || !password) return res.status(400).json({ error: "email and password required" });
+
+  let tenant = null;
+  if (tenantName) {
+    tenant = await prisma.tenant.upsert({
+      where: { name: tenantName },
+      update: {},
+      create: { name: tenantName },
+    });
+  }
+
+  const hash = await bcrypt.hash(password, 10);
+  try {
+    const user = await prisma.user.create({
+      data: {
+        email,
+        username: username || email,
+        passwordHash: hash,
+        role: "user",
+        isActive: true,
+        ...(tenant ? { tenantId: tenant.id } : {}),
+      },
+    });
+    const token = signToken(user);
+    res.json({ token });
+  } catch {
+    res.status(409).json({ error: "User exists or invalid data" });
+  }
+});
+
+app.post("/auth/login", async (req, res) => {
+  const { email, username, identifier, password } = req.body || {};
+  const ident = email || username || identifier;
+  if (!ident || !password) return res.status(400).json({ error: "identifier and password required" });
+
+  // Allow login by email or username
+  let user = null;
+  // Try exact email match first
+  user = await prisma.user.findUnique({ where: { email: ident } }).catch(() => null);
+  if (!user) {
+    // Fallback to username match (not unique); take first active
+    const found = await prisma.user.findFirst({ where: { username: ident } }).catch(() => null);
+    if (found) user = found;
+  }
+  if (!user || !user.isActive) return res.status(401).json({ error: "Invalid credentials" });
+
+  const ok = await bcrypt.compare(password, user.passwordHash);
+  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+  if (user.mustResetPassword) {
+    return res.status(403).json({ error: "Password reset required", code: "PWD_RESET_REQUIRED" });
+  }
+  const token = signToken(user);
+  res.json({ token });
+});
+
+// Devices
+app.get("/devices", requireAuth, async (req, res) => {
+  let where = {};
+  if (req.user.tenantId) {
+    where = { tenantId: req.user.tenantId };
+  } else if (req.query.tenantId) {
+    const tid = Number(req.query.tenantId);
+    if (Number.isFinite(tid)) where = { tenantId: tid };
+  }
+  const list = await prisma.device.findMany({ where, orderBy: { id: "desc" } });
+  const safe = list.map((d) => {
+    const { credPasswordEnc, ...rest } = d;
+    return { ...rest, credUsername: d.credUsername || null, hasCredPassword: !!credPasswordEnc };
+  });
+  res.json(safe);
+});
+
+app.post("/devices", requireAuth, async (req, res) => {
+  const tenantId =
+    req.user.tenantId ||
+    (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
+
+  const {
+    name,
+    hostname = null,
+    ipAddress,
+    deviceType = "router",
+    manufacturer,
+    model,
+    status = "inactive",
+    snmpVersion = null,
+    snmpCommunity = null,
+    snmpPort = null,
+  } = req.body || {};
+
+  if (!name || !ipAddress || !manufacturer || !model) {
+    return res.status(400).json({ error: "name, ipAddress, manufacturer, model required" });
+  }
+
+  const data = {
+      tenantId,
+      name,
+      hostname,
+      ipAddress,
+      deviceType,
+      manufacturer,
+      model,
+      status,
+      snmpVersion,
+      snmpCommunity,
+      snmpPort,
+    credUsername: null,
+    credPasswordEnc: null,
+    credUpdatedAt: null,
+  };
+  if (req.body?.credentials) {
+    const cu = String(req.body.credentials.username || '').trim();
+    const cp = String(req.body.credentials.password || '').trim();
+    if (cu) data.credUsername = cu;
+    if (cp) {
+      data.credPasswordEnc = encryptSecret(cp);
+      data.credUpdatedAt = new Date();
+    }
+  }
+  const created = await prisma.device.create({ data });
+  res.status(201).json(created);
+});
+
+app.patch("/devices/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  // Sanitize and coerce payload
+  const body = req.body || {};
+  const allowed = [
+    'name','hostname','ipAddress','manufacturer','model','deviceType','status',
+    'snmpVersion','snmpCommunity','snmpPort','osVersion','location','description','tenantId'
+  ];
+  const data = {};
+  for (const k of allowed) {
+    if (body[k] !== undefined && body[k] !== null) data[k] = body[k];
+  }
+  if (data.snmpPort !== undefined) data.snmpPort = Number(data.snmpPort);
+  if (data.tenantId !== undefined) data.tenantId = Number(data.tenantId);
+  // Credentials update in same request if provided
+  if (body?.credentials) {
+    if (typeof body.credentials.username === 'string') data.credUsername = body.credentials.username;
+    if (typeof body.credentials.password === 'string' && body.credentials.password !== '********') {
+      if (body.credentials.password.length > 0) {
+        data.credPasswordEnc = encryptSecret(body.credentials.password);
+        data.credUpdatedAt = new Date();
+      }
+    }
+  }
+  const updated = await prisma.device.update({ where: { id }, data });
+  res.json(updated);
+});
+
+app.delete("/devices/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  await prisma.device.delete({ where: { id } });
+  res.status(204).send();
+});
+
+// Device credentials endpoints
+app.get('/devices/:id/credentials', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const reveal = String(req.query.reveal || '').toLowerCase() === 'true' || String(req.query.reveal || '') === '1';
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) return res.status(404).json({ error: 'Not found' });
+  const payload = { username: device.credUsername || '', hasPassword: !!device.credPasswordEnc };
+  if (reveal) {
+    payload.password = decryptSecret(device.credPasswordEnc) || '';
+  }
+  res.json(payload);
+});
+
+app.patch('/devices/:id/credentials', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) return res.status(404).json({ error: 'Not found' });
+  const { username, password } = req.body || {};
+  const data = {};
+  if (typeof username === 'string') data.credUsername = username;
+  if (typeof password === 'string') {
+    data.credPasswordEnc = password.length > 0 ? encryptSecret(password) : null;
+    data.credUpdatedAt = new Date();
+  }
+  const updated = await prisma.device.update({ where: { id }, data });
+  res.json({ ok: true, id: updated.id });
+});
+
+// Update local ASN for all discovered peers of a device
+app.patch('/devices/:id/local-asn', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const { localAsn } = req.body || {};
+    const lasn = Number(localAsn || 0) || null;
+    await prisma.discoveredBgpPeer.updateMany({ where: { deviceId: id }, data: { localAsn: lasn } });
+    res.json({ ok: true, localAsn: lasn });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Applications
+app.get("/applications", requireAuth, async (req, res) => {
+  const where = req.user.tenantId ? { tenantId: req.user.tenantId } : {};
+  const list = await prisma.application.findMany({ where, orderBy: { id: "desc" } });
+  res.json(list);
+});
+
+app.post("/applications", requireAuth, async (req, res) => {
+  const tenantId =
+    req.user.tenantId ||
+    (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
+
+  const { name, url, apiKey, status = "disconnected", description = null } = req.body || {};
+  if (!name || !url || !apiKey) return res.status(400).json({ error: "name, url, apiKey required" });
+
+  const created = await prisma.application.create({
+    data: { tenantId, name, url, apiKey, status, description },
+  });
+  res.status(201).json(created);
+});
+
+app.patch("/applications/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const appRow = await prisma.application.findUnique({ where: { id } });
+  if (!appRow || (req.user.tenantId && appRow.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const updated = await prisma.application.update({ where: { id }, data: req.body || {} });
+  res.json(updated);
+});
+
+// Allow user to change password when flagged for reset
+app.post("/auth/change-password", async (req, res) => {
+  const { email, username, identifier, currentPassword, newPassword } = req.body || {};
+  const ident = email || username || identifier;
+  if (!ident || !currentPassword || !newPassword) return res.status(400).json({ error: "identifier, currentPassword, newPassword required" });
+  let user = await prisma.user.findUnique({ where: { email: ident } }).catch(() => null);
+  if (!user) {
+    user = await prisma.user.findFirst({ where: { username: ident } }).catch(() => null);
+  }
+  if (!user || !user.isActive) return res.status(401).json({ error: "Invalid credentials" });
+  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+  const hash = await bcrypt.hash(newPassword, 10);
+  const updated = await prisma.user.update({ where: { id: user.id }, data: { passwordHash: hash, mustResetPassword: false } });
+  const token = signToken(updated);
+  res.json({ ok: true, token });
+});
+
+// Current user profile
+app.get('/me', requireAuth, async (req, res) => {
+  try {
+    const u = await prisma.user.findUnique({ where: { id: Number(req.user.sub) } });
+    if (!u) return res.status(404).json({ error: 'Not found' });
+    res.json({ id: u.id, email: u.email, username: u.username, role: u.role, isActive: u.isActive, tenantId: u.tenantId });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Update current user profile (limited fields)
+app.patch('/me', requireAuth, async (req, res) => {
+  try {
+    const { username } = req.body || {};
+    const data = {};
+    if (typeof username === 'string' && username.trim().length > 0) data.username = username.trim();
+    if (Object.keys(data).length === 0) return res.status(400).json({ error: 'No changes' });
+    const updated = await prisma.user.update({ where: { id: Number(req.user.sub) }, data });
+    res.json({ id: updated.id, email: updated.email, username: updated.username, role: updated.role, isActive: updated.isActive, tenantId: updated.tenantId });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Persistência de descobertas SNMP: Interfaces
+app.get("/devices/:id/discovery/interfaces", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const rows = await prisma.discoveredInterface.findMany({
+    where: { deviceId: id },
+    orderBy: { ifIndex: "asc" },
+  });
+  res.json(rows);
+});
+
+app.post("/devices/:id/discovery/interfaces", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const { interfaces } = req.body || {};
+  if (!Array.isArray(interfaces)) {
+    return res.status(400).json({ error: "'interfaces' must be an array" });
+  }
+  // Substitui snapshot anterior
+  await prisma.discoveredInterface.deleteMany({ where: { deviceId: id } });
+  if (interfaces.length > 0) {
+    await prisma.discoveredInterface.createMany({
+      data: interfaces.map((it) => ({
+        tenantId: device.tenantId,
+        deviceId: device.id,
+        deviceName: device.name,
+        ifIndex: String(it.index ?? it.ifIndex ?? ""),
+        ifName: String(it.name ?? it.ifName ?? ""),
+        ifDesc: (it.desc ?? it.ifDesc ?? "") || null,
+        ifType: Number(it.type ?? it.ifType ?? 0),
+      })),
+    });
+  }
+  const count = await prisma.discoveredInterface.count({ where: { deviceId: id } });
+  res.json({ ok: true, count });
+});
+
+// Persistência de descobertas SNMP: BGP Peers
+app.get("/devices/:id/discovery/peers", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const rows = await prisma.discoveredBgpPeer.findMany({
+    where: { deviceId: id },
+    orderBy: [{ vrfName: "asc" }, { ipPeer: "asc" }],
+  });
+  res.json(rows);
+});
+
+app.post("/devices/:id/discovery/peers", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+  const { peers, localAsn } = req.body || {};
+  if (!Array.isArray(peers)) {
+    return res.status(400).json({ error: "'peers' must be an array" });
+  }
+  await prisma.discoveredBgpPeer.deleteMany({ where: { deviceId: id } });
+  if (peers.length > 0) {
+    const asns = Array.from(new Set(peers.map((p) => Number(p.asn || 0)).filter((n) => Number.isFinite(n) && n > 0)));
+    const reg = await prisma.asnRegistry.findMany({ where: { asn: { in: asns } } });
+    const map = new Map(reg.map(r => [Number(r.asn), r.name]));
+    await prisma.discoveredBgpPeer.createMany({
+      data: peers.map((p) => {
+        const asn = Number(p.asn ?? 0) || 0;
+        const fallback = asn ? `AS${asn}` : null;
+        const regName = map.get(asn) || null;
+        const effName = regName || (p.name ?? null) || fallback;
+        return {
+          tenantId: device.tenantId,
+          deviceId: device.id,
+          deviceName: device.name,
+          ipPeer: String(p.ip ?? p.ip_peer ?? p.peerIp ?? ""),
+          asn,
+          asnName: effName,
+          localAsn: Number(localAsn || 0) || null,
+          name: (p.name ?? null) || null,
+          vrfName: (p.vrf_name ?? p.vrfName ?? null) || null,
+        };
+      }),
+    });
+  }
+  const count = await prisma.discoveredBgpPeer.count({ where: { deviceId: id } });
+  res.json({ ok: true, count });
+});
+
+// Lista peers BGP descobertos por tenant (escopo do usuário ou por query ?tenantId=)
+app.get('/bgp/peers', requireAuth, async (req, res) => {
+  try {
+    let where = {};
+    if (req.user.tenantId) {
+      where = { tenantId: req.user.tenantId };
+    } else if (req.query.tenantId) {
+      const tid = Number(req.query.tenantId);
+      if (Number.isFinite(tid)) where = { tenantId: tid };
+    }
+    const rows = await prisma.discoveredBgpPeer.findMany({ where, orderBy: [{ deviceName: 'asc' }, { ipPeer: 'asc' }] });
+    res.json(rows.map((r) => {
+      const effName = r.asnName || r.name || (r.asn ? `AS${r.asn}` : null);
+      return { id: r.id, tenantId: r.tenantId, deviceId: r.deviceId, deviceName: r.deviceName, ip: r.ipPeer, asn: r.asn, localAsn: r.localAsn || null, name: effName, vrfName: r.vrfName || null };
+    }));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// ASN registry endpoints (admin can upsert, users can list)
+app.get('/asn-registry', requireAuth, async (_req, res) => {
+  try {
+    const list = await prisma.asnRegistry.findMany({ orderBy: { asn: 'asc' } });
+    res.json(list);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post('/asn-registry', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { asn, name } = req.body || {};
+    if (!asn || !name) return res.status(400).json({ error: 'asn and name required' });
+    const up = await prisma.asnRegistry.upsert({ where: { asn: Number(asn) }, update: { name }, create: { asn: Number(asn), name } });
+    res.json(up);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post('/asn-registry/reprocess', requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    await refreshAsnRegistryFromPeers();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// NetBox sync
+app.post("/netbox/sync", requireAuth, async (req, res) => {
+  try {
+    const { resources, url: urlOverride, token: tokenOverride, deviceFilters } = req.body || {};
+    const summary = await syncFromNetbox(prisma, {
+      url: urlOverride || process.env.NETBOX_URL,
+      token: tokenOverride || process.env.NETBOX_TOKEN,
+      resources,
+      tenantScopeId: req.user.tenantId || null,
+      deviceFilters,
+    });
+    res.json(summary);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Jumpserver: teste básico de conectividade/autorização
+app.post("/jumpserver/test", requireAuth, async (req, res) => {
+  const { url: bodyUrl, apiKey: bodyKey } = req.body || {};
+  const url = bodyUrl || process.env.JUMPSERVER_URL;
+  const apiKey = bodyKey || process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY;
+  if (!url) return res.status(400).json({ ok: false, error: "URL ausente" });
+  try {
+    // Primeiro tenta um HEAD na raiz
+    const r1 = await fetch(url, { method: "HEAD" }).catch(() => null);
+    if (r1 && (r1.ok || r1.status === 401)) {
+      return res.json({ ok: true, status: r1.status, message: r1.statusText || "Reachable" });
+    }
+    // Tenta um GET em um endpoint comum de health (se existir)
+    const healthUrl = url.replace(/\/$/, "") + "/api/health/";
+    const h = await fetch(healthUrl, {
+      method: "GET",
+      headers: apiKey ? { Authorization: `Token ${apiKey}` } : {},
+    }).catch(() => null);
+    if (h) {
+      const ok = h.ok || h.status === 401;
+      const text = await h.text().catch(() => "");
+      return res.json({ ok, status: h.status, message: text || h.statusText || "Reachable" });
+    }
+    return res.status(502).json({ ok: false, error: "Sem resposta do Jumpserver" });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+// NetBox catalog (device roles, platforms, ...)
+app.post("/netbox/catalog", requireAuth, async (req, res) => {
+  try {
+    const { url: urlOverride, token: tokenOverride, resources } = req.body || {};
+    const out = await getNetboxCatalog({
+      url: urlOverride || process.env.NETBOX_URL,
+      token: tokenOverride || process.env.NETBOX_TOKEN,
+      resources: resources || [],
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Stats overview (contadores para Dashboard)
+app.get("/stats/overview", requireAuth, async (req, res) => {
+  try {
+    const whereTenant = req.user.tenantId ? { tenantId: req.user.tenantId } : {};
+    const GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
+    const [activeDevices, discoveredPeers, tenants] = await Promise.all([
+      prisma.device.count({ where: { ...whereTenant, status: "active" } }),
+      prisma.discoveredBgpPeer.count({ where: whereTenant }),
+      prisma.tenant.count({ where: { ...(req.user.tenantId ? { id: req.user.tenantId } : {}), tenantGroup: GROUP_FILTER } }),
+    ]);
+    res.json({ activeDevices, discoveredPeers, tenants });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: summary of counts (scoped to tenant unless admin without tenant)
+app.get("/admin/summary", requireAuth, async (req, res) => {
+  try {
+    let whereTenant = {};
+    if (req.user.tenantId) {
+      whereTenant = { tenantId: req.user.tenantId };
+    } else {
+      const def = await prisma.tenant.findUnique({ where: { name: "default" } });
+      whereTenant = def ? { tenantId: def.id } : { tenantId: -1 };
+    }
+    const [devices, interfaces, peers, applications, tenants] = await Promise.all([
+      prisma.device.count({ where: whereTenant }),
+      prisma.discoveredInterface.count({ where: whereTenant }),
+      prisma.discoveredBgpPeer.count({ where: whereTenant }),
+      prisma.application.count({ where: whereTenant }),
+      prisma.tenant.count({ where: req.user.tenantId ? { id: req.user.tenantId } : { name: "default" } }),
+    ]);
+    res.json({ devices, interfaces, peers, applications, tenants });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: purge selected entities in tenant scope, or global if admin
+app.post("/admin/purge", requireAuth, async (req, res) => {
+  try {
+    const { devices = false, discoveries = false, applications = false, tenants = false, confirm = "", dryRun = false, global = false } = req.body || {};
+    if (typeof confirm !== "string" || confirm.toUpperCase() !== "APAGAR") {
+      return res.status(400).json({ error: "Confirmação inválida. Digite 'APAGAR' para confirmar." });
+    }
+    if (tenants && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Somente admin pode remover tenants" });
+    }
+    if (global && req.user.role !== "admin") {
+      return res.status(403).json({ error: "Somente admin pode executar purga global" });
+    }
+
+    let whereTenant = {};
+    if (!global && req.user.tenantId) {
+      whereTenant = { tenantId: req.user.tenantId };
+    } else {
+      if (global) {
+        whereTenant = {};
+      } else {
+        const def = await prisma.tenant.findUnique({ where: { name: "default" } });
+        whereTenant = def ? { tenantId: def.id } : { tenantId: -1 };
+      }
+    }
+    const result = { deletedDevices: 0, deletedInterfaces: 0, deletedPeers: 0, deletedApplications: 0, deletedTenants: 0 };
+
+    if (dryRun) {
+      if (discoveries) {
+        result.deletedInterfaces = await prisma.discoveredInterface.count({ where: whereTenant });
+        result.deletedPeers = await prisma.discoveredBgpPeer.count({ where: whereTenant });
+      } else if (devices) {
+        const scopedDevices = await prisma.device.findMany({ where: whereTenant, select: { id: true } });
+        const ids = scopedDevices.map((d) => d.id);
+        if (ids.length > 0) {
+          result.deletedInterfaces = await prisma.discoveredInterface.count({ where: { deviceId: { in: ids } } });
+          result.deletedPeers = await prisma.discoveredBgpPeer.count({ where: { deviceId: { in: ids } } });
+        }
+      }
+      if (devices) {
+        result.deletedDevices = await prisma.device.count({ where: whereTenant });
+      }
+      if (applications) {
+        result.deletedApplications = await prisma.application.count({ where: whereTenant });
+      }
+      if (tenants && req.user.role === "admin") {
+        result.deletedTenants = await prisma.tenant.count({});
+      }
+      await logAudit(req, 'purge-dryrun', { devices, discoveries, applications, tenants, global, result });
+      return res.json({ ok: false, dryRun: true, ...result });
+    }
+
+    if (discoveries) {
+      result.deletedInterfaces = (await prisma.discoveredInterface.deleteMany({ where: whereTenant })).count;
+      result.deletedPeers = (await prisma.discoveredBgpPeer.deleteMany({ where: whereTenant })).count;
+    }
+    if (devices) {
+      // Delete discoveries first for devices in scope
+      const scopedDevices = await prisma.device.findMany({ where: whereTenant, select: { id: true } });
+      const ids = scopedDevices.map((d) => d.id);
+      if (ids.length > 0) {
+        await prisma.discoveredInterface.deleteMany({ where: { deviceId: { in: ids } } });
+        await prisma.discoveredBgpPeer.deleteMany({ where: { deviceId: { in: ids } } });
+      }
+      result.deletedDevices = (await prisma.device.deleteMany({ where: whereTenant })).count;
+    }
+    if (applications) {
+      result.deletedApplications = (await prisma.application.deleteMany({ where: whereTenant })).count;
+    }
+    if (tenants) {
+      // Admin-only: remove all tenants (dangerous)
+      result.deletedTenants = (await prisma.tenant.deleteMany({})).count;
+    }
+
+    await logAudit(req, 'purge', { devices, discoveries, applications, tenants, global, result });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: export JSON snapshot for backup
+app.get("/admin/snapshot", requireAuth, async (req, res) => {
+  try {
+    let whereTenant = {};
+    if (req.user.tenantId) {
+      whereTenant = { tenantId: req.user.tenantId };
+    } else {
+      const def = await prisma.tenant.findUnique({ where: { name: "default" } });
+      whereTenant = def ? { tenantId: def.id } : { tenantId: -1 };
+    }
+    const [tenants, devices, interfaces, peers, applications] = await Promise.all([
+      req.user.tenantId
+        ? prisma.tenant.findMany({ where: { id: req.user.tenantId } })
+        : prisma.tenant.findMany({ where: { name: "default" } }),
+      prisma.device.findMany({ where: whereTenant }),
+      prisma.discoveredInterface.findMany({ where: whereTenant }),
+      prisma.discoveredBgpPeer.findMany({ where: whereTenant }),
+      prisma.application.findMany({ where: whereTenant }),
+    ]);
+
+    const snapshot = {
+      meta: {
+        exportedAt: new Date().toISOString(),
+        scope: req.user.tenantId ? { tenantId: req.user.tenantId } : { tenantId: null, role: req.user.role },
+      },
+      tenants,
+      devices,
+      discoveredInterfaces: interfaces,
+      discoveredBgpPeers: peers,
+      applications,
+    };
+
+    await logAudit(req, 'snapshot', { count: { tenants: tenants.length, devices: devices.length, interfaces: interfaces.length, peers: peers.length, applications: applications.length } });
+    res.setHeader('Content-Type', 'application/json');
+    res.json(snapshot);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: import JSON snapshot (merge/overwrite options)
+app.post("/admin/import-snapshot", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { data, options } = req.body || {};
+    if (!data || typeof data !== 'object') return res.status(400).json({ error: "Snapshot 'data' inválido" });
+    const {
+      importTenants = true,
+      importDevices = true,
+      importApplications = true,
+      importDiscoveries = true,
+      overwriteTenants = false,
+      overwriteDevices = false,
+      overwriteApplications = false,
+      overwriteDiscoveries = false,
+      dryRun = false,
+    } = options || {};
+
+    const commit = !dryRun;
+    // Overwrite (dangerous): remove all for selected entities
+    if (commit && overwriteDiscoveries) {
+      await prisma.discoveredInterface.deleteMany({});
+      await prisma.discoveredBgpPeer.deleteMany({});
+    }
+    if (commit && overwriteDevices) {
+      await prisma.discoveredInterface.deleteMany({});
+      await prisma.discoveredBgpPeer.deleteMany({});
+      await prisma.device.deleteMany({});
+    }
+    if (commit && overwriteApplications) {
+      await prisma.application.deleteMany({});
+    }
+    if (commit && overwriteTenants) {
+      await prisma.tenant.deleteMany({});
+    }
+
+    // Build tenant mapping snapshotTenantId -> dbTenantId using tenant name
+    const tenantMap = new Map();
+    const tenants = Array.isArray(data.tenants) ? data.tenants : [];
+    if (importTenants) {
+      for (const t of tenants) {
+        if (commit) {
+          const created = await prisma.tenant.upsert({
+            where: { name: t.name },
+            update: { description: t.description || null, tenantGroup: t.tenantGroup || null },
+            create: { name: t.name, description: t.description || null, tenantGroup: t.tenantGroup || null },
+          });
+          tenantMap.set(t.id, created.id);
+        } else {
+          // simulate id mapping with fake incremental
+          if (!tenantMap.has(t.id)) tenantMap.set(t.id, t.id);
+        }
+      }
+    } else {
+      for (const t of tenants) {
+        const found = await prisma.tenant.findUnique({ where: { name: t.name } });
+        if (found) tenantMap.set(t.id, found.id);
+      }
+    }
+
+    const results = { tenants: tenantMap.size, devices: 0, applications: 0, interfaces: 0, peers: 0 };
+
+    // Devices
+    const devices = Array.isArray(data.devices) ? data.devices : [];
+    if (importDevices) {
+      for (const d of devices) {
+        const newTenantId = tenantMap.get(d.tenantId) || d.tenantId || null;
+        if (!newTenantId) continue;
+        const existing = await prisma.device.findFirst({ where: { tenantId: newTenantId, name: d.name } });
+        if (commit) {
+          if (existing) {
+            await prisma.device.update({
+              where: { id: existing.id },
+              data: {
+                hostname: d.hostname || null,
+                ipAddress: d.ipAddress || existing.ipAddress,
+                deviceType: d.deviceType || existing.deviceType,
+                manufacturer: d.manufacturer || existing.manufacturer,
+                model: d.model || existing.model,
+                osVersion: d.osVersion || null,
+                status: d.status || existing.status,
+                location: d.location || null,
+                description: d.description || null,
+                snmpVersion: d.snmpVersion || null,
+                snmpCommunity: d.snmpCommunity || null,
+                snmpPort: d.snmpPort || null,
+              },
+            });
+          } else {
+            await prisma.device.create({
+              data: {
+                tenantId: newTenantId,
+                name: d.name,
+                hostname: d.hostname || null,
+                ipAddress: d.ipAddress || "0.0.0.0",
+                deviceType: d.deviceType || "router",
+                manufacturer: d.manufacturer || "unknown",
+                model: d.model || "unknown",
+                osVersion: d.osVersion || null,
+                status: d.status || "inactive",
+                location: d.location || null,
+                description: d.description || null,
+                snmpVersion: d.snmpVersion || null,
+                snmpCommunity: d.snmpCommunity || null,
+                snmpPort: d.snmpPort || null,
+              },
+            });
+          }
+        }
+        results.devices++;
+      }
+    }
+
+    // Applications
+    const applications = Array.isArray(data.applications) ? data.applications : [];
+    if (importApplications) {
+      for (const a of applications) {
+        const newTenantId = tenantMap.get(a.tenantId) || a.tenantId || null;
+        if (!newTenantId) continue;
+        const existing = await prisma.application.findFirst({ where: { tenantId: newTenantId, name: a.name } });
+        if (commit) {
+          if (existing) {
+            await prisma.application.update({ where: { id: existing.id }, data: { url: a.url, apiKey: a.apiKey, status: a.status || existing.status, description: a.description || null } });
+          } else {
+            await prisma.application.create({ data: { tenantId: newTenantId, name: a.name, url: a.url, apiKey: a.apiKey, status: a.status || "disconnected", description: a.description || null } });
+          }
+        }
+        results.applications++;
+      }
+    }
+
+    // Build device name -> id map per tenant
+    const allDevices = await prisma.device.findMany({ select: { id: true, name: true, tenantId: true } });
+    const deviceKey = (name, tenantId) => `${tenantId}::${name}`;
+    const deviceMap = new Map(allDevices.map((d) => [deviceKey(d.name, d.tenantId), d.id]));
+
+    // Discovered Interfaces
+    const discIfs = Array.isArray(data.discoveredInterfaces) ? data.discoveredInterfaces : [];
+    if (importDiscoveries && discIfs.length > 0) {
+      for (const r of discIfs) {
+        const newTenantId = tenantMap.get(r.tenantId) || r.tenantId || null;
+        if (!newTenantId) continue;
+        const devId = deviceMap.get(deviceKey(r.deviceName, newTenantId));
+        if (!devId) continue;
+        if (commit) {
+          await prisma.discoveredInterface.create({ data: { tenantId: newTenantId, deviceId: devId, deviceName: r.deviceName, ifIndex: String(r.ifIndex), ifName: String(r.ifName || ''), ifDesc: r.ifDesc || null, ifType: Number(r.ifType || 0) } });
+        }
+        results.interfaces++;
+      }
+    }
+
+    // Discovered BGP Peers
+    const discPeers = Array.isArray(data.discoveredBgpPeers) ? data.discoveredBgpPeers : [];
+    if (importDiscoveries && discPeers.length > 0) {
+      for (const p of discPeers) {
+        const newTenantId = tenantMap.get(p.tenantId) || p.tenantId || null;
+        if (!newTenantId) continue;
+        const devId = deviceMap.get(deviceKey(p.deviceName, newTenantId));
+        if (!devId) continue;
+        if (commit) {
+          await prisma.discoveredBgpPeer.create({ data: { tenantId: newTenantId, deviceId: devId, deviceName: p.deviceName, ipPeer: String(p.ipPeer || ''), asn: Number(p.asn || 0), name: p.name || null, vrfName: p.vrfName || null } });
+        }
+        results.peers++;
+      }
+    }
+
+    await logAudit(req, commit ? 'import' : 'import-dryrun', { options: { importTenants, importDevices, importApplications, importDiscoveries, overwriteTenants, overwriteDevices, overwriteApplications, overwriteDiscoveries, dryRun }, results });
+    res.json({ ok: commit, dryRun: !commit, ...results });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: list audit logs with optional filters (tenant-scoped for non-admins)
+app.get("/admin/audit", requireAuth, async (req, res) => {
+  try {
+    const { action, from, to, limit = 50 } = req.query || {};
+    const where = {};
+    if (req.user.tenantId) where.tenantId = req.user.tenantId;
+    if (action) where.action = String(action);
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = new Date(String(from));
+      if (to) where.createdAt.lte = new Date(String(to));
+    }
+    const logs = await prisma.auditLog.findMany({ where, orderBy: { createdAt: "desc" }, take: Number(limit) || 50 });
+    res.json(logs);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Tenants listing: admin -> all, user -> own
+app.get("/tenants", requireAuth, async (req, res) => {
+  try {
+    const GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
+    let where = {};
+    if (req.user.tenantId) {
+      where = { id: req.user.tenantId };
+    } else {
+      // Admin/global: restringe por Tenant Group conforme solicitado
+      where = { tenantGroup: GROUP_FILTER };
+    }
+    const list = await prisma.tenant.findMany({ where, orderBy: { name: "asc" } });
+    res.json(list);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Users management (admin only)
+app.get("/admin/users", requireAuth, requireAdmin, async (_req, res) => {
+  try {
+    const users = await prisma.user.findMany({ orderBy: { id: "asc" } });
+    res.json(users.map(u => ({ id: u.id, email: u.email, username: u.username, role: u.role, isActive: u.isActive, tenantId: u.tenantId, mustResetPassword: u.mustResetPassword })));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { email, username, password, role = "user", isActive = true, tenantId, tenantName } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: "email and password required" });
+    let tId = tenantId || null;
+    if (!tId && tenantName) {
+      const t = await prisma.tenant.upsert({ where: { name: tenantName }, update: {}, create: { name: tenantName } });
+      tId = t.id;
+    }
+    const hash = await bcrypt.hash(password, 10);
+    const user = await prisma.user.create({ data: { email, username: username || email, passwordHash: hash, role, isActive, tenantId: tId } });
+    await logAudit(req, 'user-create', { id: user.id, email, role, tenantId: tId });
+    res.status(201).json({ id: user.id, email: user.email, username: user.username, role: user.role, isActive: user.isActive, tenantId: user.tenantId });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+  const { role, isActive, password, tenantId, mustResetPassword } = req.body || {};
+  const data = {};
+  if (typeof role === 'string') data.role = role;
+  if (typeof isActive === 'boolean') data.isActive = isActive;
+  if (tenantId !== undefined) data.tenantId = tenantId;
+  if (password) data.passwordHash = await bcrypt.hash(password, 10);
+  if (typeof mustResetPassword === 'boolean') data.mustResetPassword = mustResetPassword;
+    const updated = await prisma.user.update({ where: { id }, data });
+    await logAudit(req, 'user-update', { id, role: updated.role, isActive: updated.isActive, tenantId: updated.tenantId, changed: Object.keys(data) });
+    res.json({ id: updated.id, email: updated.email, username: updated.username, role: updated.role, isActive: updated.isActive, tenantId: updated.tenantId });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.delete("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const u = await prisma.user.delete({ where: { id } });
+    await logAudit(req, 'user-delete', { id, email: u.email });
+    res.status(204).send();
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  app.listen(PORT, () => {
+    console.log(`API listening on http://localhost:${PORT}`);
+    bootstrapBackground();
+  });
+}
+
+export default app;

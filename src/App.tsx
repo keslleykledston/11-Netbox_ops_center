@@ -1,0 +1,53 @@
+import { Toaster } from "@/components/ui/toaster";
+import { Toaster as Sonner } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import Login from "./pages/Login";
+import Register from "./pages/Register";
+import Dashboard from "./pages/Dashboard";
+import Devices from "./pages/Devices";
+import BgpPeers from "./pages/BgpPeers";
+import Configurations from "./pages/Configurations";
+import Applications from "./pages/Applications";
+import Maintenance from "./pages/Maintenance";
+import Users from "./pages/Users";
+import UserProfile from "./pages/UserProfile";
+import NotFound from "./pages/NotFound";
+import { getToken } from "@/lib/api";
+
+const queryClient = new QueryClient();
+
+const RequireAuth = ({ children }: { children: JSX.Element }) => {
+  const token = getToken();
+  if (!token) return <Navigate to="/login" replace />;
+  return children;
+};
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/" element={<Navigate to="/login" replace />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
+          <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
+          <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
+          <Route path="/configurations" element={<RequireAuth><Configurations /></RequireAuth>} />
+          <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
+          <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
+          <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
+          <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />
+          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </BrowserRouter>
+    </TooltipProvider>
+  </QueryClientProvider>
+);
+
+export default App;

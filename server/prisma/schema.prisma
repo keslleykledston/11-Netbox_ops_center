@@ -1,0 +1,127 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id           Int           @id @default(autoincrement())
+  name         String        @unique
+  description  String?
+  tenantGroup  String?
+  users        User[]
+  devices      Device[]
+  applications Application[]
+  discoveredInterfaces DiscoveredInterface[]
+  discoveredBgpPeers   DiscoveredBgpPeer[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model User {
+  id           Int       @id @default(autoincrement())
+  email        String    @unique
+  username     String?
+  passwordHash String
+  role         String    @default("user")
+  isActive     Boolean   @default(true)
+  mustResetPassword Boolean @default(false)
+  tenantId     Int?
+  tenant       Tenant?   @relation(fields: [tenantId], references: [id])
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+model Device {
+  id            Int      @id @default(autoincrement())
+  tenantId      Int
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  name          String
+  hostname      String?
+  ipAddress     String
+  deviceType    String   @default("router")
+  manufacturer  String
+  model         String
+  osVersion     String?
+  status        String   @default("inactive")
+  location      String?
+  description   String?
+  snmpVersion   String?
+  snmpCommunity String?
+  snmpPort      Int?
+  credUsername  String?
+  credPasswordEnc String?
+  credUpdatedAt DateTime?
+  discoveredInterfaces DiscoveredInterface[]
+  discoveredBgpPeers   DiscoveredBgpPeer[]
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model Application {
+  id          Int      @id @default(autoincrement())
+  tenantId    Int
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  name        String
+  url         String
+  apiKey      String
+  status      String   @default("disconnected")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model AsnRegistry {
+  id    Int    @id @default(autoincrement())
+  asn   Int    @unique
+  name  String
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+  userId    String?
+  userRole  String?
+  tenantId  Int?
+  action    String
+  details   String?
+}
+
+// Resultado de descoberta de interfaces via SNMP
+model DiscoveredInterface {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  deviceId     Int
+  device       Device   @relation(fields: [deviceId], references: [id])
+  deviceName   String
+  ifIndex      String
+  ifName       String
+  ifDesc       String?
+  ifType       Int
+  discoveredAt DateTime @default(now())
+
+  @@index([deviceId])
+}
+
+// Resultado de descoberta de peers BGP via SNMP
+model DiscoveredBgpPeer {
+  id           Int      @id @default(autoincrement())
+  tenantId     Int
+  tenant       Tenant   @relation(fields: [tenantId], references: [id])
+  deviceId     Int
+  device       Device   @relation(fields: [deviceId], references: [id])
+  deviceName   String
+  ipPeer       String
+  asn          Int
+  asnName      String?
+  localAsn     Int?
+  name         String?
+  vrfName      String?
+  discoveredAt DateTime @default(now())
+
+  @@index([deviceId])
+}

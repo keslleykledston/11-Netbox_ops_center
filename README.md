@@ -63,8 +63,8 @@ Instalação completa (comandos)
   - node -v && npm -v && docker --version
 
 - Clonar o repositório e instalar pacotes
-  - git clone https://github.com/keslleykledston/netbox-ops-center
-  - cd netbox-ops-center
+  - git clone https://github.com/keslleykledston/11-Netbox_ops_center.git
+  - cd 11-Netbox_ops_center
   - npm install
   - npm run server:install
 

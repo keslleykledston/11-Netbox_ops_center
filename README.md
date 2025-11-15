@@ -44,6 +44,21 @@ O assistente pergunta:
 
 Ambos os fluxos reutilizam o mesmo repositório e arquivos `.env`, além de realizarem testes automáticos (curl) para garantir que a UI responda após a instalação. Escolha a opção que melhor se encaixa no seu cenário (laboratório rápido com containers ou execução direta no host).
 
+### Criar usuário admin via wizard
+
+Após a instalação, utilize o assistente para criar/atualizar um administrador:
+
+```bash
+# Caminho compatível com documentações antigas ("server/script") e o atual ("server/scripts")
+node server/scripts/admin-wizard.js
+# ou
+./server/script/admin-wizard.js
+```
+
+O script pergunta e-mail/usuário/senha, faz a confirmação e grava (ou atualiza) o admin diretamente no banco definido em `server/.env`.
+
+> **Admin padrão automático:** durante a instalação é criado o usuário `suporte@suporte.com.br` com senha `Ops_pass_`. O login inicial exige redefinição imediata da senha. A tela de login exibe a dica enquanto o usuário não alterar a credencial.
+
 Instalação (desenvolvimento)
 1) Dependências e envs
    - cp .env.example .env

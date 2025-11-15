@@ -17,6 +17,9 @@ app.use(express.json());
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
 const OXIDIZED_ENABLED = Boolean(process.env.OXIDIZED_API_URL || process.env.OXIDIZED_ROUTER_DB);
+const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || 'suporte@suporte.com.br';
+const DEFAULT_ADMIN_USERNAME = process.env.DEFAULT_ADMIN_USERNAME || 'admin';
+const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'Ops_pass_';
 
 // Simple startup validation and summary
 (() => {
@@ -54,6 +57,29 @@ async function ensureDefaultTenant() {
     }
   } catch (e) {
     console.warn('[BOOT][WARN] ensureDefaultTenant failed:', String(e?.message || e));
+  }
+}
+
+async function ensureDefaultAdminUser() {
+  try {
+    const admin = await prisma.user.findUnique({ where: { email: DEFAULT_ADMIN_EMAIL } }).catch(() => null);
+    if (!admin) {
+      const hash = await bcrypt.hash(DEFAULT_ADMIN_PASSWORD, 10);
+      await prisma.user.create({
+        data: {
+          email: DEFAULT_ADMIN_EMAIL,
+          username: DEFAULT_ADMIN_USERNAME,
+          passwordHash: hash,
+          role: 'admin',
+          isActive: true,
+          mustResetPassword: true,
+          tenantId: null,
+        },
+      });
+      console.log('[BOOT] Created default admin user');
+    }
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultAdminUser failed:', String(e?.message || e));
   }
 }
 
@@ -119,6 +145,7 @@ async function refreshAsnRegistryFromPeers() {
 
 async function bootstrapBackground() {
   await ensureDefaultTenant();
+  await ensureDefaultAdminUser();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
@@ -275,6 +302,20 @@ app.post("/auth/login", async (req, res) => {
   }
   const token = signToken(user);
   res.json({ token });
+});
+
+app.get('/auth/default-admin-hint', async (_req, res) => {
+  try {
+    const user = await prisma.user.findUnique({ where: { email: DEFAULT_ADMIN_EMAIL } }).catch(() => null);
+    const showHint = !!(user && user.mustResetPassword);
+    res.json({
+      showHint,
+      email: showHint ? DEFAULT_ADMIN_EMAIL : null,
+      password: showHint ? DEFAULT_ADMIN_PASSWORD : null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 // Devices

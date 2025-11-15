@@ -209,6 +209,9 @@ export const api = {
   async updateMe(patch: { username?: string }) {
     return apiFetch(`/me`, { method: 'PATCH', body: JSON.stringify(patch) });
   },
+  async getDefaultAdminHint() {
+    return apiFetch(`/auth/default-admin-hint`, { method: 'GET' });
+  },
   async listBackupDevices() {
     return apiFetch(`/backup/devices`, { method: 'GET' });
   },

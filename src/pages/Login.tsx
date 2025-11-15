@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Network } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
 
@@ -15,7 +16,18 @@ const Login = () => {
   const [password, setPassword] = useState("");
   const [showReset, setShowReset] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [defaultHint, setDefaultHint] = useState<{ email: string; password: string } | null>(null);
   const useBackend = import.meta.env.VITE_USE_BACKEND === "true";
+  useEffect(() => {
+    if (!useBackend) return;
+    api.getDefaultAdminHint().then((resp: any) => {
+      if (resp?.showHint) {
+        setDefaultHint({ email: resp.email || "suporte@suporte.com.br", password: resp.password || "Ops_pass_" });
+      } else {
+        setDefaultHint(null);
+      }
+    }).catch(() => setDefaultHint(null));
+  }, [useBackend]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,6 +78,14 @@ const Login = () => {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {defaultHint && (
+            <Alert className="mb-4">
+              <AlertTitle>Primeiro acesso</AlertTitle>
+              <AlertDescription>
+                Utilize <strong>{defaultHint.email}</strong> / <strong>{defaultHint.password}</strong> para entrar e altere a senha imediatamente.
+              </AlertDescription>
+            </Alert>
+          )}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="identifier">Usuário ou Email</Label>

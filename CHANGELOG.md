@@ -9,6 +9,7 @@ Todas as mudanças notáveis deste projeto serão documentadas aqui.
 - Integração direta com a API do Oxidized (`/nodes.json` e `/node/version.json`), exibindo status do último backup e as versões disponíveis.
 - Backend sincroniza o `router.db` (mantendo um bloco gerenciado) com base nos dispositivos marcados como ativos, incluindo usuário/senha/porta SSH.
 - Endpoints REST `/backup/devices` e `/backup/devices/:id/versions` para consumo pelo front.
+- Seed automático do usuário admin (`suporte@suporte.com.br` / `Ops_pass_`) com exigência de troca de senha no primeiro login e hint exibido na tela inicial enquanto a senha padrão não for alterada.
 
 ### Melhorias
 - Dispositivos passam a registrar `sshPort` e `backupEnabled`, permitindo configurar portas customizadas (ex.: 50022) e persistir a preferência no banco.

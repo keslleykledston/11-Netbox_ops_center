@@ -1,0 +1,23 @@
+services:
+  app:
+    image: node:20-bullseye
+    container_name: netbox-ops-center-app-1
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: ${DATABASE_URL:-file:./dev.db}
+      JWT_SECRET: ${JWT_SECRET:-change_me}
+      OXIDIZED_API_URL: ${OXIDIZED_API_URL:-http://host.docker.internal:8888}
+      OXIDIZED_ROUTER_DB: ${OXIDIZED_ROUTER_DB:-/host-oxidized/router.db}
+    volumes:
+      - .:/app
+      - /etc/oxidized:/host-oxidized
+    ports:
+      - "58080:8080"
+    command: >-
+      sh -lc "
+        if [ ! -d node_modules ]; then npm install; fi &&
+        if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        npm run dev:stack
+      "
+    restart: unless-stopped

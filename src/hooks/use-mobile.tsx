@@ -136,10 +136,11 @@ export function useDevices(tenantId?: string) {
           manufacturer: device.manufacturer,
           model: device.model,
           status: device.status,
-          snmpVersion: device.snmpVersion,
-          snmpCommunity: device.snmpCommunity,
-          snmpPort: device.snmpPort,
-        });
+        snmpVersion: device.snmpVersion,
+        snmpCommunity: device.snmpCommunity,
+        snmpPort: device.snmpPort,
+        sshPort: device.sshPort,
+      });
         await refreshDevices();
         return created as unknown as Device;
       }

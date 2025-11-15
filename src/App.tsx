@@ -10,6 +10,7 @@ import Devices from "./pages/Devices";
 import BgpPeers from "./pages/BgpPeers";
 import Configurations from "./pages/Configurations";
 import Applications from "./pages/Applications";
+import Backup from "./pages/Backup";
 import Maintenance from "./pages/Maintenance";
 import Users from "./pages/Users";
 import UserProfile from "./pages/UserProfile";
@@ -39,6 +40,7 @@ const App = () => (
           <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
           <Route path="/configurations" element={<RequireAuth><Configurations /></RequireAuth>} />
           <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
+          <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
           <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
           <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
           <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />

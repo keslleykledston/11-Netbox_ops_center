@@ -52,9 +52,11 @@ model Device {
   snmpVersion   String?
   snmpCommunity String?
   snmpPort      Int?
+  sshPort       Int?
   credUsername  String?
   credPasswordEnc String?
   credUpdatedAt DateTime?
+  backupEnabled Boolean  @default(false)
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
   createdAt     DateTime @default(now())

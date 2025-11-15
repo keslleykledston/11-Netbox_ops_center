@@ -62,6 +62,13 @@ const deviceFormSchema = z.object({
       return port >= 1 && port <= 65535;
     }, { message: "Porta deve estar entre 1 e 65535" })
     .default("161"),
+  sshPort: z.string()
+    .regex(/^[0-9]+$/, { message: "Porta deve ser um número" })
+    .refine((val) => {
+      const port = parseInt(val);
+      return port >= 1 && port <= 65535;
+    }, { message: "Porta deve estar entre 1 e 65535" })
+    .default("22"),
 });
 
 type DeviceFormValues = z.infer<typeof deviceFormSchema>;
@@ -99,6 +106,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
       snmpCommunity: "public",
       snmpVersion: "v2c",
       snmpPort: "161",
+      sshPort: "22",
     },
   });
 
@@ -121,6 +129,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
         snmpVersion: data.snmpVersion,
         snmpCommunity: data.snmpCommunity,
         snmpPort: parseInt(data.snmpPort, 10),
+        sshPort: parseInt(data.sshPort, 10),
       };
 
       const success = await createDevice(newDevice);
@@ -259,6 +268,21 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
                       <FormControl>
                         <Input type="password" placeholder="••••••••" {...field} className="bg-zinc-800 text-white border-zinc-700 placeholder:text-zinc-400" />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="sshPort"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Porta SSH</FormLabel>
+                      <FormControl>
+                        <Input placeholder="22" {...field} className="bg-zinc-800 text-white border-zinc-700 placeholder:text-zinc-400" />
+                      </FormControl>
+                      <FormDescription>Porta usada para backup via SSH</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}

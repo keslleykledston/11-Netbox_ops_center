@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import { syncFromNetbox, getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
+import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus } from "./oxidized.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -15,6 +16,7 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
+const OXIDIZED_ENABLED = Boolean(process.env.OXIDIZED_API_URL || process.env.OXIDIZED_ROUTER_DB);
 
 // Simple startup validation and summary
 (() => {
@@ -24,16 +26,22 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
   const nbGroup = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
   const jsUrl = process.env.JUMPSERVER_URL;
   const jsToken = process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY;
+  const oxUrl = process.env.OXIDIZED_API_URL;
+  const oxRouter = process.env.OXIDIZED_ROUTER_DB;
 
   console.log("[ENV] API PORT=", PORT);
   console.log("[ENV] DATABASE_URL=", dbUrl);
   console.log("[ENV] NETBOX_TENANT_GROUP_FILTER=", nbGroup);
+  if (oxUrl) console.log("[ENV] OXIDIZED_API_URL=", oxUrl);
+  if (oxRouter) console.log("[ENV] OXIDIZED_ROUTER_DB=", oxRouter);
 
   if (!nbUrl) console.warn("[ENV][WARN] NETBOX_URL not set — NetBox sync will require url in request body.");
   if (!nbToken) console.warn("[ENV][WARN] NETBOX_TOKEN not set — NetBox sync will require token in request body.");
   if (!jsUrl) console.warn("[ENV][WARN] JUMPSERVER_URL not set — Jumpserver tests will require url in request body.");
   if (!jsToken) console.warn("[ENV][WARN] JUMPSERVER_TOKEN/API_KEY not set — Jumpserver tests may respond unauthorized unless provided in body.");
   if (JWT_SECRET === "dev_secret") console.warn("[ENV][WARN] Using default JWT secret — set JWT_SECRET in production.");
+  if (!oxUrl) console.warn("[ENV][WARN] OXIDIZED_API_URL not set — status e versões não estarão disponíveis.");
+  if (!oxRouter) console.warn("[ENV][WARN] OXIDIZED_ROUTER_DB not set — atualização do router.db será ignorada.");
 })();
 
 // Background bootstrap tasks
@@ -113,6 +121,7 @@ async function bootstrapBackground() {
   await ensureDefaultTenant();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
+  syncRouterDbFromDb();
 }
 
 async function logAudit(req, action, detailsObj) {
@@ -162,6 +171,49 @@ function requireScopeOrAdmin(req, res, next) {
 function requireAdmin(req, res, next) {
   if (req.user?.role === "admin") return next();
   return res.status(403).json({ error: "Admin only" });
+}
+
+function buildDeviceWhere(req) {
+  let where = {};
+  if (req.user?.tenantId) {
+    where = { tenantId: req.user.tenantId };
+  } else if (req.query.tenantId) {
+    const tid = Number(req.query.tenantId);
+    if (Number.isFinite(tid)) where = { tenantId: tid };
+  }
+  return where;
+}
+
+function sanitizeDeviceOutput(device) {
+  const { credPasswordEnc, ...rest } = device;
+  return {
+    ...rest,
+    credUsername: device.credUsername || null,
+    hasCredPassword: !!credPasswordEnc,
+  };
+}
+
+async function syncRouterDbFromDb() {
+  if (!OXIDIZED_ENABLED) return;
+  try {
+    const devices = await prisma.device.findMany({
+      where: { backupEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        ipAddress: true,
+        model: true,
+        manufacturer: true,
+        credUsername: true,
+        credPasswordEnc: true,
+        sshPort: true,
+        backupEnabled: true,
+      },
+    });
+    await syncRouterDb(devices);
+  } catch (err) {
+    console.warn('[BACKUP][WARN] Falha ao sincronizar router.db:', String(err?.message || err));
+  }
 }
 
 app.get("/health", (_req, res) => {
@@ -227,19 +279,9 @@ app.post("/auth/login", async (req, res) => {
 
 // Devices
 app.get("/devices", requireAuth, async (req, res) => {
-  let where = {};
-  if (req.user.tenantId) {
-    where = { tenantId: req.user.tenantId };
-  } else if (req.query.tenantId) {
-    const tid = Number(req.query.tenantId);
-    if (Number.isFinite(tid)) where = { tenantId: tid };
-  }
+  const where = buildDeviceWhere(req);
   const list = await prisma.device.findMany({ where, orderBy: { id: "desc" } });
-  const safe = list.map((d) => {
-    const { credPasswordEnc, ...rest } = d;
-    return { ...rest, credUsername: d.credUsername || null, hasCredPassword: !!credPasswordEnc };
-  });
-  res.json(safe);
+  res.json(list.map(sanitizeDeviceOutput));
 });
 
 app.post("/devices", requireAuth, async (req, res) => {
@@ -258,6 +300,7 @@ app.post("/devices", requireAuth, async (req, res) => {
     snmpVersion = null,
     snmpCommunity = null,
     snmpPort = null,
+    sshPort = null,
   } = req.body || {};
 
   if (!name || !ipAddress || !manufacturer || !model) {
@@ -276,6 +319,7 @@ app.post("/devices", requireAuth, async (req, res) => {
       snmpVersion,
       snmpCommunity,
       snmpPort,
+      sshPort: sshPort ? Number(sshPort) : null,
     credUsername: null,
     credPasswordEnc: null,
     credUpdatedAt: null,
@@ -290,7 +334,7 @@ app.post("/devices", requireAuth, async (req, res) => {
     }
   }
   const created = await prisma.device.create({ data });
-  res.status(201).json(created);
+  res.status(201).json(sanitizeDeviceOutput(created));
 });
 
 app.patch("/devices/:id", requireAuth, async (req, res) => {
@@ -303,13 +347,14 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
   const body = req.body || {};
   const allowed = [
     'name','hostname','ipAddress','manufacturer','model','deviceType','status',
-    'snmpVersion','snmpCommunity','snmpPort','osVersion','location','description','tenantId'
+    'snmpVersion','snmpCommunity','snmpPort','sshPort','osVersion','location','description','tenantId'
   ];
   const data = {};
   for (const k of allowed) {
     if (body[k] !== undefined && body[k] !== null) data[k] = body[k];
   }
   if (data.snmpPort !== undefined) data.snmpPort = Number(data.snmpPort);
+  if (data.sshPort !== undefined) data.sshPort = data.sshPort === null ? null : Number(data.sshPort);
   if (data.tenantId !== undefined) data.tenantId = Number(data.tenantId);
   // Credentials update in same request if provided
   if (body?.credentials) {
@@ -322,7 +367,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
     }
   }
   const updated = await prisma.device.update({ where: { id }, data });
-  res.json(updated);
+  res.json(sanitizeDeviceOutput(updated));
 });
 
 app.delete("/devices/:id", requireAuth, async (req, res) => {
@@ -332,6 +377,9 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
     return res.status(404).json({ error: "Not found" });
   }
   await prisma.device.delete({ where: { id } });
+  if (device.backupEnabled) {
+    await syncRouterDbFromDb();
+  }
   res.status(204).send();
 });
 
@@ -378,6 +426,106 @@ app.patch('/devices/:id/local-asn', requireAuth, async (req, res) => {
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
+});
+
+// Backup / Oxidized integration endpoints
+app.get('/backup/devices', requireAuth, async (req, res) => {
+  const where = buildDeviceWhere(req);
+  const devices = await prisma.device.findMany({ where, orderBy: { id: 'desc' } });
+  const nodesResp = await fetchOxidizedNodes();
+  const nodesMap = new Map();
+  if (nodesResp?.nodes) {
+    for (const node of nodesResp.nodes) {
+      nodesMap.set(node.name, node);
+    }
+  }
+  const managed = await getManagedRouterEntries();
+  const routerDbInfo = getRouterDbStatus();
+  const items = devices.map((device) => {
+    const node = nodesMap.get(device.name);
+    const hasPassword = !!device.credPasswordEnc;
+    const oxidized = node
+      ? {
+          present: true,
+          status: node.status || node.last?.status || 'unknown',
+          lastRun: node.time || node.last?.end || null,
+        }
+      : {
+          present: false,
+          status: device.backupEnabled ? 'pending' : 'inactive',
+          lastRun: null,
+        };
+    return {
+      id: device.id,
+      name: device.name,
+      ipAddress: device.ipAddress,
+      manufacturer: device.manufacturer,
+      model: device.model,
+      backupEnabled: !!device.backupEnabled,
+      sshPort: device.sshPort || null,
+      credUsername: device.credUsername || null,
+      hasCredPassword: hasPassword,
+      oxidized,
+      managed: managed.names?.has(device.name) || false,
+      tenantId: device.tenantId,
+    };
+  });
+  res.json({
+    items,
+    oxidized: {
+      available: !!nodesResp?.ok,
+      message: nodesResp?.error || null,
+      baseUrl: nodesResp?.baseUrl || null,
+    },
+    routerDb: routerDbInfo,
+  });
+});
+
+app.patch('/backup/devices/:id', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const enabled = req.body?.enabled;
+  const sshPort = req.body?.sshPort;
+  if (enabled === undefined && sshPort === undefined) {
+    return res.status(400).json({ error: 'enabled ou sshPort devem ser informados' });
+  }
+  const data = {};
+  if (enabled !== undefined) data.backupEnabled = !!enabled;
+  if (sshPort !== undefined) {
+    if (sshPort === null || sshPort === '') {
+      data.sshPort = null;
+    } else {
+      const portNumber = Number(sshPort);
+      if (!Number.isFinite(portNumber) || portNumber < 1 || portNumber > 65535) {
+        return res.status(400).json({ error: 'sshPort inválida' });
+      }
+      data.sshPort = portNumber;
+    }
+  }
+  if (data.backupEnabled) {
+    if (!device.credUsername || !device.credPasswordEnc) {
+      return res.status(400).json({ error: 'Configure usuário e senha antes de habilitar backup' });
+    }
+  }
+  const updated = await prisma.device.update({ where: { id }, data });
+  await syncRouterDbFromDb();
+  res.json(sanitizeDeviceOutput(updated));
+});
+
+app.get('/backup/devices/:id/versions', requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const resp = await fetchOxidizedVersions(device.name);
+  if (!resp?.ok) {
+    return res.status(502).json({ error: resp?.error || 'Oxidized indisponível' });
+  }
+  res.json(resp.versions || []);
 });
 
 // Applications

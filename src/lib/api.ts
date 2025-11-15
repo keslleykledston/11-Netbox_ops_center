@@ -209,5 +209,14 @@ export const api = {
   async updateMe(patch: { username?: string }) {
     return apiFetch(`/me`, { method: 'PATCH', body: JSON.stringify(patch) });
   },
+  async listBackupDevices() {
+    return apiFetch(`/backup/devices`, { method: 'GET' });
+  },
+  async updateBackupDevice(id: number | string, payload: { enabled?: boolean; sshPort?: number | null }) {
+    return apiFetch(`/backup/devices/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+  },
+  async getBackupVersions(id: number | string) {
+    return apiFetch(`/backup/devices/${id}/versions`, { method: 'GET' });
+  },
 };
 import { toast as sonnerToast } from "sonner";

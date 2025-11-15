@@ -105,6 +105,12 @@ clone_repo() {
 }
 
 write_envs() {
+  local default_api="http://localhost:8888"
+  local default_router="/etc/oxidized/router.db"
+  if [[ $INSTALL_MODE == docker ]]; then
+    default_api="http://host.docker.internal:8888"
+    default_router="/host-oxidized/router.db"
+  fi
   if [[ ! -f "$APP_DIR/.env" ]]; then
     cat >"$APP_DIR/.env" <<'ENVEOF'
 VITE_USE_BACKEND=true
@@ -115,7 +121,11 @@ SNMP_SERVER_PORT=3001
 SNMP_MAX_REPETITIONS=20
 SNMP_GLOBAL_TIMEOUT_MS=60000
 NETBOX_TENANT_GROUP_FILTER=K3G Solutions
+OXIDIZED_API_URL=__OX_URL__
+OXIDIZED_ROUTER_DB=__OX_ROUTER__
 ENVEOF
+    sed -i "s#__OX_URL__#${default_api}#" "$APP_DIR/.env"
+    sed -i "s#__OX_ROUTER__#${default_router}#" "$APP_DIR/.env"
   fi
   mkdir -p "$APP_DIR/server"
   if [[ ! -f "$APP_DIR/server/.env" ]]; then
@@ -125,7 +135,11 @@ PORT=4000
 JWT_SECRET=change_me
 NETBOX_URL=http://localhost:8000
 NETBOX_TOKEN=
+OXIDIZED_API_URL=__OX_URL__
+OXIDIZED_ROUTER_DB=__OX_ROUTER__
 SENVEOF
+    sed -i "s#__OX_URL__#${default_api}#" "$APP_DIR/server/.env"
+    sed -i "s#__OX_ROUTER__#${default_router}#" "$APP_DIR/server/.env"
   fi
 }
 
@@ -138,8 +152,13 @@ services:
     working_dir: /app
     environment:
       NODE_ENV: development
+      DATABASE_URL: \${DATABASE_URL:-file:./dev.db}
+      JWT_SECRET: \${JWT_SECRET:-change_me}
+      OXIDIZED_API_URL: \${OXIDIZED_API_URL:-http://host.docker.internal:8888}
+      OXIDIZED_ROUTER_DB: \${OXIDIZED_ROUTER_DB:-/host-oxidized/router.db}
     volumes:
       - .:/app
+      - /etc/oxidized:/host-oxidized
     ports:
       - "${EXTERNAL_PORT}:8080"
     command: >-
@@ -164,6 +183,9 @@ wait_for_http() {
 }
 
 start_docker_stack() {
+  if [[ $INSTALL_MODE == docker ]]; then
+    ensure_oxidized_tree
+  fi
   log "Subindo stack Docker..."
   (cd "$APP_DIR" && $COMPOSE up -d --remove-orphans)
   wait_for_http "NetBox Ops Center" "http://localhost:${EXTERNAL_PORT}" 180
@@ -196,6 +218,19 @@ install_bare_dependencies() {
   run_as_app "cd '$APP_DIR' && npm install"
   run_as_app "cd '$APP_DIR' && npm run server:install"
   run_as_app "cd '$APP_DIR' && npm run db:push"
+}
+
+ensure_oxidized_tree() {
+  local host_dir="/etc/oxidized"
+  if [[ ! -d "$host_dir" ]]; then
+    log "Criando diretório $host_dir"
+    mkdir -p "$host_dir"
+  fi
+  if [[ ! -f "$host_dir/router.db" ]]; then
+    cat >"$host_dir/router.db" <<'ROUTER'
+# Managed entries serão controlados automaticamente
+ROUTER
+  fi
 }
 
 setup_systemd() {

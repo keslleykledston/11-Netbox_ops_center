@@ -59,6 +59,10 @@ export interface Device {
   snmpVersion?: 'v2c' | 'v3';
   snmpCommunity?: string;
   snmpPort?: number;
+  sshPort?: number | null;
+  backupEnabled?: boolean;
+  credUsername?: string | null;
+  hasCredPassword?: boolean;
   createdAt: string;
   updatedAt: string;
 }

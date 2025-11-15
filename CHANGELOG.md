@@ -2,6 +2,23 @@
 
 Todas as mudanças notáveis deste projeto serão documentadas aqui.
 
+## [Unreleased]
+
+### Novidades
+- Nova aba **Backup** (UI) com listagem de dispositivos, status em tempo real do Oxidized, toggle liga/desliga e atalho para histórico de versões.
+- Integração direta com a API do Oxidized (`/nodes.json` e `/node/version.json`), exibindo status do último backup e as versões disponíveis.
+- Backend sincroniza o `router.db` (mantendo um bloco gerenciado) com base nos dispositivos marcados como ativos, incluindo usuário/senha/porta SSH.
+- Endpoints REST `/backup/devices` e `/backup/devices/:id/versions` para consumo pelo front.
+
+### Melhorias
+- Dispositivos passam a registrar `sshPort` e `backupEnabled`, permitindo configurar portas customizadas (ex.: 50022) e persistir a preferência no banco.
+- Script `deploy_netbox_ops_center_docker.sh` instala Docker/Portainer, monta `/etc/oxidized` dentro do container e injeta `OXIDIZED_API_URL`/`OXIDIZED_ROUTER_DB` automaticamente.
+- `.env`/`server/.env` documentam as novas variáveis necessárias para a integração.
+
+### Correções
+- Sanitização unificada das respostas de dispositivos (`credUsername`/`hasCredPassword`) e sincronização automática do router.db após exclusão.
+
+
 ## [v0.1.0] - 2025-11-14
 
 Primeira release pública do NetBox Ops Center (NetManager).

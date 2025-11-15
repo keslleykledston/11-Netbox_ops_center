@@ -29,6 +29,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
     snmpVersion: "v2c" as Device["snmpVersion"],
     snmpCommunity: "",
     snmpPort: 161,
+    sshPort: 22,
     tenantId: "",
   });
 
@@ -49,6 +50,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
         snmpVersion: device.snmpVersion || "v2c",
         snmpCommunity: device.snmpCommunity || "",
         snmpPort: device.snmpPort || 161,
+        sshPort: device.sshPort || 22,
         tenantId: device.tenantId || "",
       });
       // Carrega credenciais atuais (mascara)
@@ -66,6 +68,8 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
       setForm((prev) => ({ ...prev, credentials: { ...prev.credentials, [name]: value } }));
     } else if (name === "snmpPort") {
       setForm((prev) => ({ ...prev, snmpPort: Number(value) }));
+    } else if (name === "sshPort") {
+      setForm((prev) => ({ ...prev, sshPort: Number(value) }));
     } else {
       setForm((prev) => ({ ...prev, [name]: value }));
     }
@@ -86,6 +90,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
       snmpVersion: form.snmpVersion,
       snmpCommunity: form.snmpCommunity,
       snmpPort: form.snmpPort,
+      sshPort: form.sshPort,
       tenantId: form.tenantId,
     };
 
@@ -179,6 +184,11 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
                 }}>
                   {form.credentials.password === '********' ? 'Exibir' : 'Ocultar'} senha
                 </button>
+              </label>
+              <label className="flex flex-col gap-1">
+                <span className="text-sm">Porta SSH</span>
+                <input name="sshPort" value={form.sshPort} onChange={onChange} className="border rounded px-3 py-2 bg-zinc-800 text-white border-zinc-700 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-zinc-500" />
+                <span className="text-xs text-muted-foreground">Porta utilizada para os backups (padrão 22)</span>
               </label>
             </div>
           </div>

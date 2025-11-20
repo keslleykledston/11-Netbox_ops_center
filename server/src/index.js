@@ -1,16 +1,24 @@
 import "dotenv/config";
 import express from "express";
+import expressWs from "express-ws";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
-import { syncFromNetbox, getNetboxCatalog } from "./netbox.js";
+import os from "node:os";
+import { getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
 import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus } from "./oxidized.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
+import { addNetboxSyncJob, addSnmpDiscoveryJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
+import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
+import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
+import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
 
 const prisma = new PrismaClient();
 const app = express();
+expressWs(app);
+startQueueWorkers();
 
 app.use(cors());
 app.use(express.json());
@@ -244,6 +252,23 @@ async function syncRouterDbFromDb() {
   }
 }
 
+async function enqueueCheckmkSync(action, device, userId) {
+  if (!device) return;
+  try {
+    const payload = {
+      id: device.id,
+      name: device.name,
+      hostname: device.hostname,
+      ipAddress: device.ipAddress,
+      deviceType: device.deviceType,
+      manufacturer: device.manufacturer,
+    };
+    await addCheckmkSyncJob(action, device.id, payload, userId || null);
+  } catch (err) {
+    console.warn('[CHECKMK][WARN] Falha ao enfileirar job:', err?.message || err);
+  }
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -323,7 +348,19 @@ app.get('/auth/default-admin-hint', async (_req, res) => {
 app.get("/devices", requireAuth, async (req, res) => {
   const where = buildDeviceWhere(req);
   const list = await prisma.device.findMany({ where, orderBy: { id: "desc" } });
-  res.json(list.map(sanitizeDeviceOutput));
+  let monitoringMap = {};
+  if (isCheckmkAvailable()) {
+    try {
+      monitoringMap = await getHostsStatus(list.map((d) => d.name));
+    } catch (err) {
+      console.warn('[CHECKMK][WARN] status lookup failed:', err?.message || err);
+    }
+  }
+  const enriched = list.map((device) => ({
+    ...sanitizeDeviceOutput(device),
+    monitoring: monitoringMap[device.name] || null,
+  }));
+  res.json(enriched);
 });
 
 app.post("/devices", requireAuth, async (req, res) => {
@@ -376,6 +413,7 @@ app.post("/devices", requireAuth, async (req, res) => {
     }
   }
   const created = await prisma.device.create({ data });
+  enqueueCheckmkSync('add', created, req.user?.sub).catch(() => {});
   res.status(201).json(sanitizeDeviceOutput(created));
 });
 
@@ -409,6 +447,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
     }
   }
   const updated = await prisma.device.update({ where: { id }, data });
+  enqueueCheckmkSync('update', updated, req.user?.sub).catch(() => {});
   res.json(sanitizeDeviceOutput(updated));
 });
 
@@ -422,6 +461,7 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
   if (device.backupEnabled) {
     await syncRouterDbFromDb();
   }
+  enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => {});
   res.status(204).send();
 });
 
@@ -465,6 +505,25 @@ app.patch('/devices/:id/local-asn', requireAuth, async (req, res) => {
     const lasn = Number(localAsn || 0) || null;
     await prisma.discoveredBgpPeer.updateMany({ where: { deviceId: id }, data: { localAsn: lasn } });
     res.json({ ok: true, localAsn: lasn });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Async discovery jobs
+app.post('/devices/:id/discovery/jobs', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { type } = req.body || {};
+    if (!['interfaces', 'peers'].includes(type)) {
+      return res.status(400).json({ error: "type deve ser 'interfaces' ou 'peers'" });
+    }
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Device não encontrado' });
+    }
+    const job = await addSnmpDiscoveryJob(device.id, type, req.user?.sub || null, req.user?.tenantId || null);
+    res.json({ jobId: job.id, queue: 'snmp-discovery' });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -774,6 +833,120 @@ app.post("/devices/:id/discovery/peers", requireAuth, async (req, res) => {
   res.json({ ok: true, count });
 });
 
+// Remote access sessions
+app.post('/access/sessions', requireAuth, async (req, res) => {
+  try {
+    const deviceId = Number(req.body?.deviceId);
+    if (!Number.isFinite(deviceId)) return res.status(400).json({ error: 'deviceId inválido' });
+    const session = await createSshSession({ prisma, deviceId, user: req.user });
+    await logAudit(req, 'access-session-create', { deviceId, sessionId: session.id });
+    res.status(201).json(session);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.get('/access/sessions', requireAuth, async (req, res) => {
+  try {
+    const limit = Number(req.query.limit) || 50;
+    const tenantScope = req.user.role === 'admin'
+      ? (req.query.tenantId ? Number(req.query.tenantId) : null)
+      : (req.user.tenantId || null);
+    const sessions = await listSshSessions({ prisma, tenantId: tenantScope, limit });
+    const sanitized = sessions.map((row) => ({
+      id: row.id,
+      deviceId: row.deviceId,
+      deviceName: row.deviceName,
+      deviceIp: row.deviceIp,
+      status: row.status,
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+      durationMs: row.durationMs,
+      tenantId: row.tenantId,
+      user: row.user ? { id: row.user.id, email: row.user.email, username: row.user.username } : null,
+      canReplay: !!row.logPath,
+    }));
+    res.json(sanitized);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.get('/access/sessions/:id/log', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await getSessionLog({
+      prisma,
+      sessionId: id,
+      tenantId: req.user.tenantId || null,
+      userId: req.user?.sub ? Number(req.user.sub) : null,
+      isAdmin: req.user.role === 'admin',
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.ws('/access/sessions/:id/stream', async (ws, req) => {
+  try {
+    const tokenParam = req.query.token;
+    const keyParam = req.query.key;
+    const token = Array.isArray(tokenParam) ? tokenParam[0] : tokenParam || req.headers.authorization?.split(' ')[1] || null;
+    const sessionKey = Array.isArray(keyParam) ? keyParam[0] : keyParam;
+    if (!token || !sessionKey) {
+      ws.close(1008, 'Token e key obrigatórios');
+      return;
+    }
+    let userPayload = null;
+    try {
+      userPayload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      ws.close(1008, 'Token inválido');
+      return;
+    }
+    const sessionId = Number(req.params.id);
+    await handleSshWebsocket({
+      prisma,
+      sessionId,
+      sessionKey,
+      ws,
+      user: userPayload,
+    });
+  } catch (e) {
+    ws.close(1011, e?.message || 'Erro inesperado');
+  }
+});
+
+const QUEUE_NAMES = new Set(['netbox-sync', 'snmp-discovery', 'checkmk-sync']);
+
+app.get('/queues/:queue/jobs/:jobId', requireAuth, async (req, res) => {
+  try {
+    const queue = String(req.params.queue);
+    if (!QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
+    const jobId = decodeURIComponent(req.params.jobId);
+    const job = await getJobStatus(queue, jobId);
+    if (!job) return res.status(404).json({ error: 'Job não encontrado' });
+    res.json(job);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.get('/queues/:queue/jobs', requireAuth, async (req, res) => {
+  try {
+    const queue = String(req.params.queue);
+    if (!QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
+    const status = String(req.query.status || 'active');
+    const start = Number(req.query.start) || 0;
+    const end = Number(req.query.end) || 10;
+    const jobs = await getQueueJobs(queue, status, start, end);
+    res.json(jobs);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // Lista peers BGP descobertos por tenant (escopo do usuário ou por query ?tenantId=)
 app.get('/bgp/peers', requireAuth, async (req, res) => {
   try {
@@ -828,14 +1001,17 @@ app.post('/asn-registry/reprocess', requireAuth, requireAdmin, async (_req, res)
 app.post("/netbox/sync", requireAuth, async (req, res) => {
   try {
     const { resources, url: urlOverride, token: tokenOverride, deviceFilters } = req.body || {};
-    const summary = await syncFromNetbox(prisma, {
+    const job = await addNetboxSyncJob({
+      resources: resources && resources.length ? resources : ['tenants', 'devices'],
       url: urlOverride || process.env.NETBOX_URL,
       token: tokenOverride || process.env.NETBOX_TOKEN,
-      resources,
-      tenantScopeId: req.user.tenantId || null,
-      deviceFilters,
+      deviceFilters: deviceFilters || null,
+    }, req.user?.sub || null, req.user?.tenantId || null);
+    res.json({
+      jobId: job.id,
+      queue: 'netbox-sync',
+      enqueuedAt: new Date().toISOString(),
     });
-    res.json(summary);
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -925,6 +1101,34 @@ app.get("/stats/overview", requireAuth, async (req, res) => {
       prisma.tenant.count({ where: { ...(req.user.tenantId ? { id: req.user.tenantId } : {}), tenantGroup: GROUP_FILTER } }),
     ]);
     res.json({ activeDevices, discoveredPeers, tenants });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/stats/host", requireAuth, async (_req, res) => {
+  try {
+    const totalMem = os.totalmem();
+    const freeMem = os.freemem();
+    const usedMem = totalMem - freeMem;
+    const memPercent = totalMem > 0 ? Number(((usedMem / totalMem) * 100).toFixed(1)) : 0;
+    const [load1m = 0] = os.loadavg();
+    const cores = Array.isArray(os.cpus()) ? os.cpus().length : 1;
+    const cpuPercent = Number(Math.min(100, (load1m / Math.max(cores, 1)) * 100).toFixed(1));
+    res.json({
+      cpu: {
+        percent: isNaN(cpuPercent) ? 0 : cpuPercent,
+        load1m: Number(load1m.toFixed(2)),
+        cores,
+      },
+      memory: {
+        percent: memPercent,
+        total: totalMem,
+        used: usedMem,
+        free: freeMem,
+      },
+      uptimeSeconds: os.uptime(),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -1381,6 +1585,19 @@ app.get("/admin/logs", requireAuth, requireAdmin, async (req, res) => {
     res.status(500).json({ error: String(e?.message || e) });
   }
 });
+
+let shuttingDown = false;
+async function gracefulShutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[SHUTDOWN] Finalizando filas e workers...');
+  await closeQueues().catch(() => {});
+  await stopQueueWorkers().catch(() => {});
+  await prisma.$disconnect().catch(() => {});
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   app.listen(PORT, () => {

@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Server, GitBranch, Users, AlertCircle } from "lucide-react";
+import { Server, GitBranch, Users, AlertCircle, Cpu, HardDrive } from "lucide-react";
 import { api } from "@/lib/api";
+
+type HostStats = {
+  cpu: { percent: number; load1m: number; cores: number };
+  memory: { percent: number; total: number; used: number; free: number };
+};
 
 const Dashboard = () => {
   const [activeDevices, setActiveDevices] = useState<number>(0);
   const [discoveredPeers, setDiscoveredPeers] = useState<number>(0);
   const [tenants, setTenants] = useState<number>(0);
+  const [hostStats, setHostStats] = useState<HostStats | null>(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -20,6 +26,19 @@ const Dashboard = () => {
       })
       .catch(() => {
         // silencioso: mantém zeros caso erro/401
+      });
+    return () => { isMounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    api.getHostStats()
+      .then((res: any) => {
+        if (!isMounted) return;
+        setHostStats(res as HostStats);
+      })
+      .catch(() => {
+        // silencioso
       });
     return () => { isMounted = false; };
   }, []);
@@ -55,6 +74,14 @@ const Dashboard = () => {
     },
   ];
 
+  const cpuPercent = Math.max(0, Math.min(100, hostStats?.cpu?.percent ?? 0));
+  const memPercent = Math.max(0, Math.min(100, hostStats?.memory?.percent ?? 0));
+  const formatBytes = (bytes?: number) => {
+    if (!bytes || bytes <= 0) return "—";
+    if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+    return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-8">
@@ -63,6 +90,57 @@ const Dashboard = () => {
           <p className="text-muted-foreground mt-2">
             Visão geral da infraestrutura de rede
           </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card className="border-muted/60">
+            <CardHeader className="pb-2 flex flex-col gap-1">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Cpu className="h-4 w-4 text-primary" />
+                CPU do Host
+              </CardTitle>
+              <CardDescription>
+                {hostStats
+                  ? `Load 1m ${hostStats.cpu.load1m.toFixed(2)} · ${hostStats.cpu.cores} cores`
+                  : "Coletando métricas..."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-500"
+                  style={{ width: `${cpuPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                {hostStats ? `${cpuPercent.toFixed(1)}% de utilização` : "—"}
+              </p>
+            </CardContent>
+          </Card>
+          <Card className="border-muted/60">
+            <CardHeader className="pb-2 flex flex-col gap-1">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <HardDrive className="h-4 w-4 text-primary" />
+                Memória do Host
+              </CardTitle>
+              <CardDescription>
+                {hostStats
+                  ? `${formatBytes(hostStats.memory.used)} / ${formatBytes(hostStats.memory.total)}`
+                  : "Coletando métricas..."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-2 rounded-full bg-muted overflow-hidden">
+                <div
+                  className="h-full bg-primary/80 transition-all duration-500"
+                  style={{ width: `${memPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground mt-2">
+                {hostStats ? `${memPercent.toFixed(1)}% em uso` : "—"}
+              </p>
+            </CardContent>
+          </Card>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">

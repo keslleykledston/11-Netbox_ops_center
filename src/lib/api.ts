@@ -146,11 +146,21 @@ export const api = {
     return apiFetch(`/bgp/peers${qs}`, { method: 'GET' });
   },
   // Integrações
-  async netboxSync(resources: string[], url?: string, token?: string, deviceFilters?: { roles?: string[]; platforms?: string[] }) {
+  async netboxSync(resources: string[], url?: string, token?: string, deviceFilters?: { roles?: string[]; platforms?: string[]; deviceTypes?: string[]; sites?: string[] }) {
     return apiFetch(`/netbox/sync`, { method: "POST", body: JSON.stringify({ resources, url, token, deviceFilters }) });
   },
   async netboxCatalog(resources: string[], url?: string, token?: string) {
     return apiFetch(`/netbox/catalog`, { method: "POST", body: JSON.stringify({ resources, url, token }) });
+  },
+  async startDiscoveryJob(deviceId: string | number, type: 'interfaces' | 'peers') {
+    return apiFetch(`/devices/${deviceId}/discovery/jobs`, { method: 'POST', body: JSON.stringify({ type }) });
+  },
+  async getJobStatus(queue: string, jobId: string) {
+    return apiFetch(`/queues/${queue}/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' });
+  },
+  async listQueueJobs(queue: string, status: string = 'active', start = 0, end = 20) {
+    const params = new URLSearchParams({ status, start: String(start), end: String(end) });
+    return apiFetch(`/queues/${queue}/jobs?${params.toString()}`, { method: 'GET' });
   },
   async jumpserverTest(url?: string, apiKey?: string) {
     return apiFetch(`/jumpserver/test`, { method: "POST", body: JSON.stringify({ url, apiKey }) });
@@ -230,6 +240,19 @@ export const api = {
     if (filter) params.set('filter', filter);
     const qs = params.toString();
     return apiFetch(`/admin/logs${qs ? `?${qs}` : ''}`, { method: 'GET' });
+  },
+  async getHostStats() {
+    return apiFetch(`/stats/host`, { method: 'GET' });
+  },
+  async createAccessSession(deviceId: number | string) {
+    return apiFetch(`/access/sessions`, { method: 'POST', body: JSON.stringify({ deviceId: Number(deviceId) }) });
+  },
+  async listAccessSessions(limit = 50) {
+    const params = new URLSearchParams({ limit: String(limit) });
+    return apiFetch(`/access/sessions?${params.toString()}`, { method: 'GET' });
+  },
+  async getAccessSessionLog(id: number | string) {
+    return apiFetch(`/access/sessions/${id}/log`, { method: 'GET' });
   },
 };
 import { toast as sonnerToast } from "sonner";

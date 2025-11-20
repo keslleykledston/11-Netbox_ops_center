@@ -3,7 +3,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { FileJson, Save, X } from "lucide-react";
+import { FileJson, Save, X, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
@@ -11,6 +11,7 @@ import { useDevices } from "@/hooks/use-mobile";
 import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { waitForJobCompletion } from "@/queues/job-client";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -24,6 +25,8 @@ function Configurations() {
   const [peersJson, setPeersJson] = useState(
     JSON.stringify({}, null, 2)
   );
+  const [interfacesJobRunning, setInterfacesJobRunning] = useState(false);
+  const [peersJobRunning, setPeersJobRunning] = useState(false);
 
   // Helpers para montar linhas tabuladas a partir do JSON em memória
   const parseInterfacesRows = () => {
@@ -129,51 +132,31 @@ function Configurations() {
       return;
     }
     try {
-      const url = `/api/snmp/interfaces?ip=${encodeURIComponent(device.ipAddress)}&community=${encodeURIComponent(device.snmpCommunity)}&port=${encodeURIComponent(device.snmpPort || 161)}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+      if (!API_MODE) {
+        toast({ title: "Modo offline", description: "Ative VITE_USE_BACKEND para usar as filas SNMP.", variant: "destructive" });
+        return;
       }
-      const json = await res.json() as { interfaces?: Array<{ index: string; name: string; desc: string; type: number }> };
-      if (!json?.interfaces || !Array.isArray(json.interfaces)) {
-        throw new Error("Resposta inesperada do gateway SNMP (sem 'interfaces')");
-      }
+      setInterfacesJobRunning(true);
+      const job = await api.startDiscoveryJob(selectedDeviceId!, 'interfaces') as { jobId: string };
+      toast({ title: "Descoberta enfileirada", description: "O gateway SNMP está coletando as interfaces." });
+      await waitForJobCompletion('snmp-discovery', job.jobId);
+      const rows = await api.getDiscoveredInterfaces(selectedDeviceId!);
       const group = device.name.split("-")[0] || "Borda";
       const file = {
-        [group]: json.interfaces.map(it => ({
-          desc_value: it.desc || "",
-          indice: String(it.index),
-          name_value: it.name || "",
-          type: Number(it.type || 0),
+        [group]: (rows as any[]).map((r) => ({
+          desc_value: String(r.ifDesc || ""),
+          indice: String(r.ifIndex || ""),
+          name_value: String(r.ifName || ""),
+          type: Number(r.ifType || 0),
         })),
       };
-      // Primeiro atualiza a visualização de JSON para o usuário
       setInterfacesJson(JSON.stringify(file, null, 2));
-      if (API_MODE) {
-        try {
-          await api.saveDiscoveredInterfaces(selectedDeviceId!, (json.interfaces || []).map((it) => ({
-            index: it.index,
-            name: it.name,
-            desc: it.desc,
-            type: it.type,
-          })));
-        } catch (e) {
-          console.error("Erro ao salvar interfaces no backend:", e);
-          toast({ title: "Aviso", description: "Falha ao salvar interfaces no backend. Dados exibidos apenas na sessão.", variant: "destructive" });
-        }
-      } else {
-        try {
-          db.saveInterfacesFile(selectedDeviceId, file);
-        } catch (e) {
-          console.error("Erro ao salvar interfaces no storage:", e);
-          toast({ title: "Aviso", description: "Falha ao salvar interfaces no storage local. Dados exibidos apenas na sessão.", variant: "destructive" });
-        }
-      }
-      toast({ title: "Interfaces descobertas", description: `Coletadas ${json.interfaces.length} interfaces e salvas com sucesso.` });
+      toast({ title: "Interfaces descobertas", description: `Coletadas ${(rows as any[]).length} interfaces e salvas com sucesso.` });
     } catch (err: any) {
       console.error("Descoberta de interfaces falhou:", err);
       toast({ title: "Falha no SNMP", description: String(err?.message || "Verifique o gateway SNMP e conectividade."), variant: "destructive" });
+    } finally {
+      setInterfacesJobRunning(false);
     }
   };
 
@@ -188,52 +171,32 @@ function Configurations() {
       return;
     }
     try {
-      const url = `/api/snmp/bgp-peers?ip=${encodeURIComponent(device.ipAddress)}&community=${encodeURIComponent(device.snmpCommunity)}&port=${encodeURIComponent(device.snmpPort || 161)}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+      if (!API_MODE) {
+        toast({ title: "Modo offline", description: "Ative o backend para executar descobertas.", variant: "destructive" });
+        return;
       }
-      const json = await res.json() as { localAsn?: number; peers?: Array<{ ip: string; asn: number; name?: string }> };
-      if (!json?.peers || !Array.isArray(json.peers)) {
-        throw new Error("Resposta inesperada do gateway SNMP (sem 'peers')");
-      }
+      setPeersJobRunning(true);
+      const job = await api.startDiscoveryJob(selectedDeviceId!, 'peers') as { jobId: string };
+      toast({ title: "Descoberta enfileirada", description: "O gateway SNMP está coletando os peers BGP." });
+      await waitForJobCompletion('snmp-discovery', job.jobId);
+      const rows = await api.getDiscoveredPeers(selectedDeviceId!);
       const group = device.name.split("-")[0] || "Borda";
       const file = {
-        [group]: json.peers.map(p => ({
+        [group]: (rows as any[]).map((p) => ({
           asn: String(p.asn || ""),
-          ip_peer: p.ip || "",
-          name: p.name || "Peer",
+          ip_peer: String(p.ipPeer || ""),
+          name: String(p.name || "Peer"),
           type: 0,
-          vrf_name: "DEFAULT",
+          vrf_name: String(p.vrfName || "DEFAULT"),
         })),
       };
-      // Primeiro atualiza a visualização de JSON para o usuário
       setPeersJson(JSON.stringify(file, null, 2));
-      if (API_MODE) {
-        try {
-          await api.saveDiscoveredPeers(selectedDeviceId!, (json.peers || []).map((p) => ({
-            ip: p.ip,
-            asn: p.asn,
-            name: p.name,
-            vrf_name: "DEFAULT",
-          })), json.localAsn);
-        } catch (e) {
-          console.error("Erro ao salvar peers no backend:", e);
-          toast({ title: "Aviso", description: "Falha ao salvar peers no backend. Dados exibidos apenas na sessão.", variant: "destructive" });
-        }
-      } else {
-        try {
-          db.savePeersFile(selectedDeviceId, file);
-        } catch (e) {
-          console.error("Erro ao salvar peers no storage:", e);
-          toast({ title: "Aviso", description: "Falha ao salvar peers no storage local. Dados exibidos apenas na sessão.", variant: "destructive" });
-        }
-      }
-      toast({ title: "Peers descobertos", description: `Coletados ${json.peers.length} peers e salvos com sucesso.` });
+      toast({ title: "Peers descobertos", description: `Coletados ${(rows as any[]).length} peers e salvos com sucesso.` });
     } catch (err: any) {
       console.error("Descoberta de peers falhou:", err);
       toast({ title: "Falha no SNMP", description: String(err?.message || "Verifique o gateway SNMP e conectividade."), variant: "destructive" });
+    } finally {
+      setPeersJobRunning(false);
     }
   };
 
@@ -280,7 +243,16 @@ function Configurations() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={handleDiscoverInterfaces}>Descobrir Interfaces</Button>
+                  <Button variant="outline" onClick={handleDiscoverInterfaces} disabled={interfacesJobRunning}>
+                    {interfacesJobRunning ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Processando...
+                      </span>
+                    ) : (
+                      "Descobrir Interfaces"
+                    )}
+                  </Button>
                 </div>
                 <div className="overflow-auto rounded border border-border/50">
                   <table className="min-w-full text-sm">
@@ -341,7 +313,16 @@ function Configurations() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={handleDiscoverPeers}>Descobrir Peer</Button>
+                  <Button variant="outline" onClick={handleDiscoverPeers} disabled={peersJobRunning}>
+                    {peersJobRunning ? (
+                      <span className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Processando...
+                      </span>
+                    ) : (
+                      "Descobrir Peer"
+                    )}
+                  </Button>
                 </div>
                 <div className="overflow-auto rounded border border-border/50">
                   <table className="min-w-full text-sm">

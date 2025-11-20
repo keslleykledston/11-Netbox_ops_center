@@ -17,6 +17,7 @@ model Tenant {
   applications Application[]
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
+  sshSessions  SshSession[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 }
@@ -31,6 +32,7 @@ model User {
   mustResetPassword Boolean @default(false)
   tenantId     Int?
   tenant       Tenant?   @relation(fields: [tenantId], references: [id])
+  sshSessions  SshSession[]
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }
@@ -59,6 +61,7 @@ model Device {
   backupEnabled Boolean  @default(false)
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
+  sshSessions  SshSession[]
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }
@@ -126,5 +129,30 @@ model DiscoveredBgpPeer {
   vrfName      String?
   discoveredAt DateTime @default(now())
 
+  @@index([deviceId])
+}
+
+model SshSession {
+  id         Int       @id @default(autoincrement())
+  sessionKey String    @unique
+  userId     Int?
+  user       User?     @relation(fields: [userId], references: [id])
+  tenantId   Int?
+  tenant     Tenant?   @relation(fields: [tenantId], references: [id])
+  deviceId   Int
+  device     Device    @relation(fields: [deviceId], references: [id])
+  deviceName String
+  deviceIp   String
+  status     String    @default("pending")
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  durationMs Int?
+  logPath    String?
+  reason     String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([tenantId])
+  @@index([userId])
   @@index([deviceId])
 }

@@ -10,6 +10,8 @@ services:
       - app
       - portainer
       - oxidized
+      - redis
+      - checkmk
     networks:
       - netbox-net
     restart: unless-stopped
@@ -22,11 +24,17 @@ services:
       NODE_ENV: development
       DATABASE_URL: ${DATABASE_URL:-file:./dev.db}
       JWT_SECRET: ${JWT_SECRET:-change_me}
+      REDIS_URL: redis://redis:6379
       OXIDIZED_API_URL: http://oxidized:8888
       OXIDIZED_ROUTER_DB: /host-oxidized/router.db
+      CHECKMK_URL: http://checkmk:5000/netbox
+      CHECKMK_SITE: netbox
+      CHECKMK_USERNAME: cmkadmin
+      CHECKMK_PASSWORD: ${CHECKMK_PASSWORD:-admin}
     volumes:
       - .:/app
       - oxidized_config:/host-oxidized
+      - ssh_sessions:/app/ssh-sessions
       - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only access to Docker socket for logs
     command: >-
       sh -lc "
@@ -62,9 +70,40 @@ services:
       - netbox-net
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: netbox-ops-center-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - netbox-net
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+  checkmk:
+    image: checkmk/check-mk-raw:latest
+    container_name: netbox-ops-center-checkmk
+    ports:
+      - "8080:5000"
+    volumes:
+      - checkmk_data:/omd/sites
+    environment:
+      - CMK_SITE_ID=netbox
+      - CMK_PASSWORD=${CHECKMK_PASSWORD:-admin}
+    networks:
+      - netbox-net
+    restart: unless-stopped
+    tmpfs:
+      - /opt/omd/sites/netbox/tmp:uid=1000,gid=1000
+
 volumes:
   portainer_data:
   oxidized_config:
+  redis_data:
+  checkmk_data:
+  ssh_sessions:
 
 networks:
   netbox-net:

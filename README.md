@@ -32,7 +32,11 @@ Se você já está no servidor onde o sistema vai rodar:
     ```bash
     sudo ./install.sh
     ```
-2.  **Siga as instruções na tela**. O script instalará o Docker, configurará o ambiente e iniciará os serviços.
+2.  **Siga as instruções na tela**. O script:
+    - instala Docker e Docker Compose (se necessário);
+    - configura os arquivos `.env`;
+    - roda `npm install` no frontend e `npm --prefix server install && npm --prefix server run prisma:generate` automaticamente;
+    - sobe toda a stack com `docker compose up -d`.
 
 #### Opção B: Instalação Remota (De outro computador)
 Se você quer instalar em um servidor remoto a partir do seu computador atual:
@@ -95,6 +99,14 @@ O script irá automaticamente:
 - **Nada funciona?**
     - Verifique os logs de instalação: `cat install_log.txt`
     - Verifique os logs dos containers: `docker compose logs -f`
+- **Frontend responde 500 para todas as rotas `/api`?**
+    - Certifique-se de que o backend está com as dependências instaladas:
+      ```bash
+      npm install
+      npm --prefix server install
+      npm --prefix server run prisma:generate
+      ```
+    - Reinicie os containers com `docker compose up -d --build`.
 
 ---
 

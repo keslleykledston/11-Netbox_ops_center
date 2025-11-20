@@ -16,6 +16,7 @@ import Users from "./pages/Users";
 import UserProfile from "./pages/UserProfile";
 import NotFound from "./pages/NotFound";
 import { getToken } from "@/lib/api";
+import RemoteAccess from "./modules/access/RemoteAccess";
 
 const queryClient = new QueryClient();
 
@@ -42,6 +43,7 @@ const App = () => (
           <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
           <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
           <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
+          <Route path="/access/terminal" element={<RequireAuth><RemoteAccess /></RequireAuth>} />
           <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
           <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

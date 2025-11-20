@@ -1,15 +1,16 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search, GitBranch, Sparkles, CheckCircle2 } from "lucide-react";
+import { Search, GitBranch, Sparkles, CheckCircle2, Loader2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useDevices } from "@/hooks/use-mobile";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 import { db } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { waitForJobCompletion } from "@/queues/job-client";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -62,21 +63,24 @@ const BgpPeers = () => {
       return;
     }
     try {
-      const url = `/api/snmp/bgp-peers?ip=${encodeURIComponent(device.ipAddress)}&community=${encodeURIComponent(device.snmpCommunity)}&port=${encodeURIComponent(device.snmpPort || 161)}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json() as { localAsn?: number };
-      const lasn = Number(json.localAsn || 0) || 0;
-      if (!lasn) throw new Error('ASN local não detectado via SNMP');
+      if (!API_MODE) {
+        toast({ title: 'Modo offline', description: 'Ative o backend para disparar a coleta SNMP.', variant: 'destructive' });
+        return;
+      }
+      setAsnJobRunning(true);
+      const job = await api.startDiscoveryJob(selectedDeviceId!, 'peers') as { jobId: string };
+      toast({ title: 'Atualizando ASN local', description: 'Coletando peers BGP para detectar o ASN.' });
+      await waitForJobCompletion('snmp-discovery', job.jobId);
+      const rows = await api.getDiscoveredPeers(selectedDeviceId!);
+      const lasn = Number((rows as any[])[0]?.localAsn || 0);
+      if (!lasn) throw new Error('ASN local não detectado via coleta');
       await api.updateDeviceLocalAsn(selectedDeviceId!, lasn);
+      await refreshDbPeers();
       toast({ title: 'ASN local atualizado', description: `AS${lasn} aplicado aos peers deste dispositivo.` });
-      // refresh peers list
-      try {
-        const rows = await api.listBgpPeers(selectedTenantId);
-        setDbPeers((rows as any[]).map((r) => ({ id: Number(r.id), deviceName: r.deviceName, ip: r.ip, asn: Number(r.asn || 0), localAsn: Number(r.localAsn || 0), name: r.name || undefined, vrfName: r.vrfName || undefined })));
-      } catch {}
     } catch (e: any) {
       toast({ title: 'Falha ao atualizar ASN local', description: String(e?.message || e), variant: 'destructive' });
+    } finally {
+      setAsnJobRunning(false);
     }
   };
 
@@ -89,6 +93,25 @@ const BgpPeers = () => {
   const [dbPeers, setDbPeers] = useState<Array<{ id: number; deviceName: string; ip: string; asn: number; localAsn?: number; name?: string; vrfName?: string }>>([]);
   const [showIbgp, setShowIbgp] = useState<boolean>(false);
   const [enrichingAsns, setEnrichingAsns] = useState<boolean>(false);
+  const [discoveryRunning, setDiscoveryRunning] = useState(false);
+  const [asnJobRunning, setAsnJobRunning] = useState(false);
+
+  const refreshDbPeers = useCallback(async (tenantId?: string) => {
+    try {
+      const rows = await api.listBgpPeers(tenantId ?? selectedTenantId);
+      setDbPeers((rows as any[]).map((r) => ({
+        id: Number(r.id),
+        deviceName: r.deviceName,
+        ip: r.ip,
+        asn: Number(r.asn || 0),
+        localAsn: Number(r.localAsn || 0) || undefined,
+        name: r.name || undefined,
+        vrfName: r.vrfName || undefined,
+      })));
+    } catch {
+      setDbPeers([]);
+    }
+  }, [selectedTenantId]);
 
   useEffect(() => {
     // Carrega tenants
@@ -100,16 +123,8 @@ const BgpPeers = () => {
   }, []);
 
   useEffect(() => {
-    // Carrega peers descobertos do banco para o tenant selecionado
-    (async () => {
-      try {
-        const rows = await api.listBgpPeers(selectedTenantId);
-        setDbPeers((rows as any[]).map((r) => ({ id: Number(r.id), deviceName: r.deviceName, ip: r.ip, asn: Number(r.asn || 0), localAsn: Number(r.localAsn || 0) || undefined, name: r.name || undefined, vrfName: r.vrfName || undefined })));
-      } catch {
-        setDbPeers([]);
-      }
-    })();
-  }, [selectedTenantId]);
+    refreshDbPeers();
+  }, [refreshDbPeers]);
   const parsePeersRows = () => {
     try {
       const data = JSON.parse(peersJson || "{}") as Record<string, Array<{ asn: string; ip_peer: string; name: string; type: number; vrf_name: string }>>;
@@ -164,51 +179,33 @@ const BgpPeers = () => {
       return;
     }
     try {
-      const url = `/api/snmp/bgp-peers?ip=${encodeURIComponent(device.ipAddress)}&community=${encodeURIComponent(device.snmpCommunity)}&port=${encodeURIComponent(device.snmpPort || 161)}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`HTTP ${res.status}${text ? `: ${text}` : ""}`);
+      if (!API_MODE) {
+        toast({ title: "Modo offline", description: "Ative o backend para executar a coleta.", variant: "destructive" });
+        return;
       }
-      const json = await res.json() as { peers?: Array<{ ip: string; asn: number; name?: string }> };
-      if (!json?.peers || !Array.isArray(json.peers)) {
-        throw new Error("Resposta inesperada do gateway SNMP (sem 'peers')");
-      }
+      setDiscoveryRunning(true);
+      const job = await api.startDiscoveryJob(selectedDeviceId!, 'peers') as { jobId: string };
+      toast({ title: "Descoberta agendada", description: "Aguarde a coleta SNMP finalizar." });
+      await waitForJobCompletion('snmp-discovery', job.jobId);
+      const rows = await api.getDiscoveredPeers(selectedDeviceId!);
       const group = device.name.split("-")[0] || "Borda";
       const file = {
-        [group]: json.peers.map(p => ({
+        [group]: (rows as any[]).map((p) => ({
           asn: String(p.asn || ""),
-          ip_peer: p.ip || "",
+          ip_peer: String(p.ipPeer || ""),
           name: p.name || "Peer",
           type: 0,
-          vrf_name: "DEFAULT",
+          vrf_name: String(p.vrfName || "DEFAULT"),
         })),
       };
-      try {
-      if (API_MODE) {
-        try {
-          await api.saveDiscoveredPeers(selectedDeviceId!, (json.peers || []).map((p) => ({
-            ip: p.ip,
-            asn: p.asn,
-            name: p.name,
-            vrf_name: "DEFAULT",
-          })));
-        } catch (e) {
-          console.error("Erro ao salvar peers no backend:", e);
-          throw new Error("Falha ao salvar peers no backend");
-        }
-      } else {
-        db.savePeersFile(selectedDeviceId, file);
-      }
-      } catch (e) {
-        console.error("Erro ao salvar peers no storage:", e);
-        throw new Error("Falha ao salvar peers no storage");
-      }
       setPeersJson(JSON.stringify(file, null, 2));
-      toast({ title: "Peers descobertos", description: `Coletados ${json.peers.length} peers e salvos com sucesso.` });
+      await refreshDbPeers();
+      toast({ title: "Peers descobertos", description: `Coletados ${(rows as any[]).length} peers e salvos com sucesso.` });
     } catch (err: any) {
       console.error("Descoberta de peers falhou:", err);
       toast({ title: "Falha no SNMP", description: String(err?.message || "Verifique o gateway SNMP e conectividade."), variant: "destructive" });
+    } finally {
+      setDiscoveryRunning(false);
     }
   };
 
@@ -391,8 +388,26 @@ const BgpPeers = () => {
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" className="accent-zinc-600" checked={showIbgp} onChange={(e) => setShowIbgp(e.target.checked)} /> Mostrar iBGP
               </label>
-              <Button variant="outline" onClick={handleUpdateLocalAsn}>Atualizar ASN local</Button>
-              <Button variant="outline" onClick={handleDiscoverPeers}>Descobrir Peer</Button>
+              <Button variant="outline" onClick={handleUpdateLocalAsn} disabled={asnJobRunning}>
+                {asnJobRunning ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Atualizando...
+                  </span>
+                ) : (
+                  "Atualizar ASN local"
+                )}
+              </Button>
+              <Button variant="outline" onClick={handleDiscoverPeers} disabled={discoveryRunning}>
+                {discoveryRunning ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Processando...
+                  </span>
+                ) : (
+                  "Descobrir Peer"
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>

@@ -141,6 +141,29 @@ EOF
     fi
 }
 
+install_dependencies() {
+    if ! command -v npm >/dev/null 2>&1; then
+        warn "npm não encontrado no PATH. Pulando instalação das dependências Node."
+        return
+    fi
+
+    if [ -f package.json ]; then
+        log "Instalando dependências do frontend..."
+        npm install >/dev/null 2>&1 || error "Falha ao executar 'npm install' na raiz do projeto."
+    else
+        warn "package.json não encontrado na raiz. Pulando instalação do frontend."
+    fi
+
+    if [ -d server ] && [ -f server/package.json ]; then
+        log "Instalando dependências do backend..."
+        npm --prefix server install >/dev/null 2>&1 || error "Falha ao executar 'npm --prefix server install'."
+        log "Gerando Prisma Client..."
+        npm --prefix server run prisma:generate >/dev/null 2>&1 || warn "Não foi possível gerar o Prisma Client. Execute 'npm --prefix server run prisma:generate' manualmente."
+    else
+        warn "Diretório 'server' não encontrado. Pulando instalação do backend."
+    fi
+}
+
 initialize_oxidized() {
     log "Initializing Oxidized configuration..."
 
@@ -205,18 +228,23 @@ main() {
     setup_environment
     progress_bar 1
 
-    # 3. Initialize Oxidized
-    log "Step 3/5: Initializing Oxidized..."
+    # 3. Dependencies
+    log "Step 3/6: Installing Node dependencies..."
+    install_dependencies
+    progress_bar 1
+
+    # 4. Initialize Oxidized
+    log "Step 4/6: Initializing Oxidized..."
     initialize_oxidized
     progress_bar 1
 
-    # 4. Start Services
-    log "Step 4/5: Starting services..."
+    # 5. Start Services
+    log "Step 5/6: Starting services..."
     start_services
     progress_bar 5
 
-    # 5. Verify
-    log "Step 5/5: Verifying installation..."
+    # 6. Verify
+    log "Step 6/6: Verifying installation..."
     verify_installation
     
     echo ""

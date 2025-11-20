@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +28,7 @@ export default function Devices() {
   const [tenants, setTenants] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
   const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(selectedTenantId);
+  const navigate = useNavigate();
 
   useEffect(() => {
     // Carrega tenants de acordo com permissões do usuário
@@ -78,6 +80,20 @@ export default function Devices() {
     if (status === 'active') return { bg: 'bg-success/10', fg: 'text-success', text: 'Ativo' };
     if (status === 'maintenance') return { bg: 'bg-warning/10', fg: 'text-warning', text: 'Manutenção' };
     return { bg: 'bg-warning/10', fg: 'text-warning', text: 'Inativo' };
+  };
+
+  const getMonitoringBadge = (monitoring?: Device['monitoring']) => {
+    if (!monitoring) return { text: 'Sem dados', fg: 'text-muted-foreground' };
+    switch (monitoring.state) {
+      case 'up':
+        return { text: 'UP', fg: 'text-success' };
+      case 'down':
+        return { text: 'DOWN', fg: 'text-destructive' };
+      case 'unreachable':
+        return { text: 'Inalcançável', fg: 'text-warning' };
+      default:
+        return { text: 'Desconhecido', fg: 'text-muted-foreground' };
+    }
   };
 
   return (
@@ -169,6 +185,7 @@ export default function Devices() {
                     const badgeBg = isActive ? "bg-success/10" : isMaint ? "bg-warning/10" : "bg-warning/10";
                     const badgeFg = isActive ? "text-success" : isMaint ? "text-warning" : "text-warning";
                     const badgeText = isActive ? "Ativo" : isMaint ? "Manutenção" : "Inativo";
+                    const monitoringBadge = getMonitoringBadge(device.monitoring);
 
                     return (
                       <Card key={device.id} className="hover:bg-accent/50 transition-colors cursor-pointer">
@@ -191,21 +208,8 @@ export default function Devices() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
                                 <DropdownMenuItem onClick={() => openEditDialog(device)}>Editar</DropdownMenuItem>
-                                <DropdownMenuItem onClick={async () => {
-                                  try {
-                                    toast({ title: "Conectando...", description: "Obtendo URL de conexão..." });
-                                    const res: any = await api.jumpserverConnect(device.id);
-                                    if (res?.url) {
-                                      window.open(res.url, '_blank');
-                                      toast({ title: "Conexão iniciada", description: "Terminal aberto em nova aba." });
-                                    } else {
-                                      throw new Error("URL não retornada");
-                                    }
-                                  } catch (e: any) {
-                                    toast({ title: "Erro na conexão", description: e.message || "Falha ao conectar", variant: "destructive" });
-                                  }
-                                }}>
-                                  Conectar (Jumpserver)
+                                <DropdownMenuItem onClick={() => navigate(`/access/terminal?deviceId=${device.id}`)}>
+                                  Terminal Web
                                 </DropdownMenuItem>
                                 <DropdownMenuItem>Configurações</DropdownMenuItem>
                                 <DropdownMenuItem>Logs</DropdownMenuItem>
@@ -240,6 +244,15 @@ export default function Devices() {
                             <div className="flex justify-between text-sm">
                               <span className="text-muted-foreground">Status</span>
                               <span className={`font-medium ${badgeFg}`}>{badgeText}</span>
+                            </div>
+                            <div className="flex justify-between text-sm">
+                              <span className="text-muted-foreground">Monitoramento</span>
+                              <span
+                                className={`font-medium ${monitoringBadge.fg}`}
+                                title={device.monitoring?.lastCheck ? `Última coleta: ${new Date(device.monitoring.lastCheck).toLocaleString()}` : undefined}
+                              >
+                                {monitoringBadge.text}
+                              </span>
                             </div>
                           </div>
                         </CardContent>

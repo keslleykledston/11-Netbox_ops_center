@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive } from "lucide-react";
+import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal } from "lucide-react";
 import { getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import IdleSessionManager from "@/components/session/IdleSessionManager";
@@ -23,6 +23,7 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const navigation = [
     { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
     { name: "Dispositivos", href: "/devices", icon: Server },
+    { name: "Acesso Remoto", href: "/access/terminal", icon: Terminal },
     { name: "Peers BGP", href: "/bgp-peers", icon: GitBranch },
     { name: "Backup", href: "/backup", icon: HardDrive },
     { name: "Configurações", href: "/configurations", icon: FileJson },

@@ -63,6 +63,11 @@ export interface Device {
   backupEnabled?: boolean;
   credUsername?: string | null;
   hasCredPassword?: boolean;
+  monitoring?: {
+    state: 'up' | 'down' | 'unreachable' | 'unknown';
+    lastCheck?: string | null;
+    error?: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
 }

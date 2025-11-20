@@ -3,7 +3,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search, GitBranch } from "lucide-react";
+import { Search, GitBranch, Sparkles, CheckCircle2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useDevices } from "@/hooks/use-mobile";
@@ -88,6 +88,7 @@ const BgpPeers = () => {
   const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
   const [dbPeers, setDbPeers] = useState<Array<{ id: number; deviceName: string; ip: string; asn: number; localAsn?: number; name?: string; vrfName?: string }>>([]);
   const [showIbgp, setShowIbgp] = useState<boolean>(false);
+  const [enrichingAsns, setEnrichingAsns] = useState<boolean>(false);
 
   useEffect(() => {
     // Carrega tenants
@@ -211,6 +212,53 @@ const BgpPeers = () => {
     }
   };
 
+  const handleEnrichAsns = async () => {
+    try {
+      setEnrichingAsns(true);
+      toast({ title: "Enriquecendo ASNs", description: "Consultando BGPView e RDAP para resolver nomes dos ASNs..." });
+
+      const res = await fetch('/api/asn-registry/reprocess', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      await res.json();
+
+      // Recarrega os peers para obter os nomes atualizados
+      const rows = await api.listBgpPeers(selectedTenantId);
+      setDbPeers((rows as any[]).map((r) => ({
+        id: Number(r.id),
+        deviceName: r.deviceName,
+        ip: r.ip,
+        asn: Number(r.asn || 0),
+        localAsn: Number(r.localAsn || 0) || undefined,
+        name: r.name || undefined,
+        vrfName: r.vrfName || undefined
+      })));
+
+      toast({
+        title: "ASNs enriquecidos com sucesso",
+        description: "Os nomes dos ASNs foram atualizados via BGPView e RDAP."
+      });
+    } catch (err: any) {
+      console.error("Erro ao enriquecer ASNs:", err);
+      toast({
+        title: "Falha ao enriquecer ASNs",
+        description: String(err?.message || "Verifique a conectividade e tente novamente."),
+        variant: "destructive"
+      });
+    } finally {
+      setEnrichingAsns(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -243,18 +291,32 @@ const BgpPeers = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Peers Descobertos (Banco)</CardTitle>
-            <div className="text-sm text-muted-foreground mt-1">
-              {(() => {
-                const total = dbPeers.length;
-                const ebgp = dbPeers.filter((p) => (p.localAsn ? Number(p.localAsn) !== Number(p.asn) : true)).length;
-                const ibgp = total - ebgp;
-                return (
-                  <span>
-                    Total: {total} • eBGP: {ebgp} • iBGP: {ibgp}
-                  </span>
-                );
-              })()}
+            <div className="flex items-start justify-between">
+              <div className="flex-1">
+                <CardTitle>Peers Descobertos (Banco)</CardTitle>
+                <div className="text-sm text-muted-foreground mt-1">
+                  {(() => {
+                    const total = dbPeers.length;
+                    const ebgp = dbPeers.filter((p) => (p.localAsn ? Number(p.localAsn) !== Number(p.asn) : true)).length;
+                    const ibgp = total - ebgp;
+                    return (
+                      <span>
+                        Total: {total} • eBGP: {ebgp} • iBGP: {ibgp}
+                      </span>
+                    );
+                  })()}
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleEnrichAsns}
+                disabled={enrichingAsns || dbPeers.length === 0}
+                className="ml-4"
+              >
+                <Sparkles className="mr-2 h-4 w-4" />
+                {enrichingAsns ? "Enriquecendo..." : "Enriquecer ASNs"}
+              </Button>
             </div>
           </CardHeader>
           <CardContent>
@@ -283,7 +345,18 @@ const BgpPeers = () => {
                           <Badge>eBGP</Badge>
                         )}
                       </td>
-                      <td className="px-3 py-1.5">{p.name || '-'}</td>
+                      <td className="px-3 py-1.5">
+                        <div className="flex items-center gap-2">
+                          {p.name ? (
+                            <>
+                              <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                              <span className="text-xs">{p.name}</span>
+                            </>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">-</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-3 py-1.5">{p.vrfName || 'DEFAULT'}</td>
                     </tr>
                   ))}

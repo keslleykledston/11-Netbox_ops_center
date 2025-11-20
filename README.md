@@ -65,6 +65,28 @@ Após a instalação, verifique se tudo está funcionando:
 
 ---
 
+## 🔄 Manutenção e Atualizações
+
+Para atualizar o sistema em produção para a versão mais recente do código:
+
+1.  **Acesse o servidor** via SSH.
+2.  **Navegue até a pasta do projeto**:
+    ```bash
+    cd 11-Netbox_ops_center
+    ```
+3.  **Execute o script de atualização**:
+    ```bash
+    ./update.sh
+    ```
+
+O script irá automaticamente:
+- Verificar se há novas versões no GitHub.
+- Baixar o código atualizado (`git pull`).
+- Atualizar as imagens Docker (`docker compose pull`).
+- Reconstruir e reiniciar os containers necessários (`docker compose up -d --build`).
+
+---
+
 ## 🛠️ Solução de Problemas
 
 - **Comando git não encontrado?**

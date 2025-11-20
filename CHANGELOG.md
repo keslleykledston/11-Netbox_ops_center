@@ -5,6 +5,7 @@ Todas as mudanças notáveis deste projeto serão documentadas aqui.
 ## [Unreleased]
 
 ### Novidades
+- Script `update.sh` para atualização automatizada em produção (verifica git, pull, rebuild containers).
 - Nova aba **Backup** (UI) com listagem de dispositivos, status em tempo real do Oxidized, toggle liga/desliga e atalho para histórico de versões.
 - Integração direta com a API do Oxidized (`/nodes.json` e `/node/version.json`), exibindo status do último backup e as versões disponíveis.
 - Backend sincroniza o `router.db` (mantendo um bloco gerenciado) com base nos dispositivos marcados como ativos, incluindo usuário/senha/porta SSH.

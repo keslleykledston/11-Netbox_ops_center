@@ -1340,6 +1340,48 @@ app.delete("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
   }
 });
 
+// Logs endpoint - returns application logs
+app.get("/admin/logs", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { execSync } = await import('child_process');
+    const lines = Number(req.query.lines) || 500;
+    const filter = String(req.query.filter || '').trim();
+
+    // Get logs from docker container
+    const containerName = 'netbox-ops-center-app';
+    let logs = '';
+
+    try {
+      logs = execSync(`docker logs --tail ${lines} ${containerName} 2>&1`, {
+        encoding: 'utf8',
+        maxBuffer: 10 * 1024 * 1024 // 10MB
+      });
+    } catch (e) {
+      // If docker command fails, return empty logs
+      logs = '[ERROR] Could not retrieve logs from Docker container\n';
+    }
+
+    // Split into lines and apply filter if provided
+    let logLines = logs.split('\n');
+
+    if (filter) {
+      const filterLower = filter.toLowerCase();
+      logLines = logLines.filter(line =>
+        line.toLowerCase().includes(filterLower)
+      );
+    }
+
+    res.json({
+      logs: logLines,
+      totalLines: logLines.length,
+      filter: filter || null,
+      container: containerName
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   app.listen(PORT, () => {
     console.log(`API listening on http://localhost:${PORT}`);

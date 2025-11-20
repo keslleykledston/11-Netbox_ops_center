@@ -27,8 +27,10 @@ services:
     volumes:
       - .:/app
       - oxidized_config:/host-oxidized
+      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only access to Docker socket for logs
     command: >-
       sh -lc "
+        apt-get update -qq && apt-get install -y -qq docker.io > /dev/null 2>&1 &&
         if [ ! -d node_modules ]; then npm install; fi &&
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
         npm run dev:stack

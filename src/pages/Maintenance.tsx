@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
+import { LogViewer } from "@/components/LogViewer";
+import { FileText } from "lucide-react";
 
 const Maintenance = () => {
   const [summary, setSummary] = useState<{ devices: number; interfaces: number; peers: number; applications: number; tenants: number } | null>(null);
@@ -22,6 +24,7 @@ const Maintenance = () => {
   const [asnEdit, setAsnEdit] = useState<Record<number, string>>({});
   const [newAsn, setNewAsn] = useState("");
   const [newAsnName, setNewAsnName] = useState("");
+  const [logViewerOpen, setLogViewerOpen] = useState(false);
   const load = async () => {
     try {
       const s = await api.adminSummary();
@@ -151,10 +154,21 @@ const Maintenance = () => {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-foreground">Manutenção</h1>
-          <p className="text-muted-foreground mt-2">Ferramentas administrativas de manutenção (escopo do seu tenant). Ações críticas exigem confirmação.</p>
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-foreground">Manutenção</h1>
+            <p className="text-muted-foreground mt-2">Ferramentas administrativas de manutenção (escopo do seu tenant). Ações críticas exigem confirmação.</p>
+          </div>
+          <Button
+            onClick={() => setLogViewerOpen(true)}
+            className="gap-2"
+          >
+            <FileText className="h-4 w-4" />
+            Logs
+          </Button>
         </div>
+
+        <LogViewer open={logViewerOpen} onOpenChange={setLogViewerOpen} />
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <Card>

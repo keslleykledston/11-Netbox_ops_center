@@ -224,5 +224,12 @@ export const api = {
   async getBackupVersions(id: number | string) {
     return apiFetch(`/backup/devices/${id}/versions`, { method: 'GET' });
   },
+  async getLogs(lines?: number, filter?: string) {
+    const params = new URLSearchParams();
+    if (lines) params.set('lines', String(lines));
+    if (filter) params.set('filter', filter);
+    const qs = params.toString();
+    return apiFetch(`/admin/logs${qs ? `?${qs}` : ''}`, { method: 'GET' });
+  },
 };
 import { toast as sonnerToast } from "sonner";

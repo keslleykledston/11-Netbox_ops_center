@@ -217,19 +217,8 @@ const BgpPeers = () => {
       setEnrichingAsns(true);
       toast({ title: "Enriquecendo ASNs", description: "Consultando BGPView e RDAP para resolver nomes dos ASNs..." });
 
-      const res = await fetch('/api/asn-registry/reprocess', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
-        },
-      });
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-
-      await res.json();
+      // Usar o helper da API que já inclui autenticação
+      await api.reprocessAsnRegistry();
 
       // Recarrega os peers para obter os nomes atualizados
       const rows = await api.listBgpPeers(selectedTenantId);
@@ -251,7 +240,7 @@ const BgpPeers = () => {
       console.error("Erro ao enriquecer ASNs:", err);
       toast({
         title: "Falha ao enriquecer ASNs",
-        description: String(err?.message || "Verifique a conectividade e tente novamente."),
+        description: String(err?.message || "Verifique se você está autenticado e tente novamente."),
         variant: "destructive"
       });
     } finally {

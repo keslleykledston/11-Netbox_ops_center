@@ -49,6 +49,23 @@ else
     
     log "${YELLOW}Starting update process...${NC}"
     
+    # 0. Backup Database
+    log "0. Creating database backup..."
+    DB_FILE="server/dev.db"
+    BACKUP_DIR="backups"
+    
+    if [ -f "$DB_FILE" ]; then
+        mkdir -p "$BACKUP_DIR"
+        BACKUP_NAME="dev_backup_$(date '+%Y%m%d_%H%M%S').db"
+        cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
+        log "${GREEN}Database backed up to $BACKUP_DIR/$BACKUP_NAME${NC}"
+        
+        # Keep only last 5 backups
+        ls -t "$BACKUP_DIR"/*.db | tail -n +6 | xargs -I {} rm -- {} 2>/dev/null
+    else
+        log "${YELLOW}Warning: Database file $DB_FILE not found. Skipping backup.${NC}"
+    fi
+    
     # Pull changes
     log "1. Pulling latest code..."
     if git pull origin main; then

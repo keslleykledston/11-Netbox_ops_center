@@ -1,23 +1,67 @@
 services:
+  proxy:
+    image: nginx:latest
+    container_name: netbox-ops-center-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app
+      - portainer
+      - oxidized
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
   app:
     image: node:20-bullseye
-    container_name: netbox-ops-center-app-1
+    container_name: netbox-ops-center-app
     working_dir: /app
     environment:
       NODE_ENV: development
       DATABASE_URL: ${DATABASE_URL:-file:./dev.db}
       JWT_SECRET: ${JWT_SECRET:-change_me}
-      OXIDIZED_API_URL: ${OXIDIZED_API_URL:-http://host.docker.internal:8888}
-      OXIDIZED_ROUTER_DB: ${OXIDIZED_ROUTER_DB:-/host-oxidized/router.db}
+      OXIDIZED_API_URL: http://oxidized:8888
+      OXIDIZED_ROUTER_DB: /host-oxidized/router.db
     volumes:
       - .:/app
-      - /etc/oxidized:/host-oxidized
-    ports:
-      - "58080:8080"
+      - oxidized_config:/host-oxidized
     command: >-
       sh -lc "
         if [ ! -d node_modules ]; then npm install; fi &&
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
         npm run dev:stack
       "
+    networks:
+      - netbox-net
     restart: unless-stopped
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: netbox-ops-center-portainer
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  oxidized:
+    image: oxidized/oxidized:latest
+    container_name: netbox-ops-center-oxidized
+    ports:
+      - "8888:8888" # Expose for debugging, but proxy handles it
+    volumes:
+      - oxidized_config:/root/.config/oxidized
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+volumes:
+  portainer_data:
+  oxidized_config:
+
+networks:
+  netbox-net:
+    driver: bridge

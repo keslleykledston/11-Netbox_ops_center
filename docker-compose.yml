@@ -53,7 +53,9 @@ services:
     ports:
       - "8888:8888" # Expose for debugging, but proxy handles it
     volumes:
-      - oxidized_config:/root/.config/oxidized
+      - oxidized_config:/home/oxidized/.config/oxidized
+    environment:
+      - CONFIG_RELOAD_INTERVAL=600
     networks:
       - netbox-net
     restart: unless-stopped

@@ -141,10 +141,30 @@ EOF
     fi
 }
 
+initialize_oxidized() {
+    log "Initializing Oxidized configuration..."
+
+    if [ -x "./scripts/init-oxidized.sh" ]; then
+        ./scripts/init-oxidized.sh
+        if [ $? -eq 0 ]; then
+            success "Oxidized initialized successfully."
+        else
+            warn "Failed to initialize Oxidized. You may need to run scripts/init-oxidized.sh manually."
+        fi
+    else
+        warn "Oxidized initialization script not found or not executable."
+        log "You may need to manually configure Oxidized later."
+    fi
+}
+
 start_services() {
     log "Starting services with Docker Compose..."
+    log "  - Pulling latest images..."
+    docker compose pull
+
+    log "  - Starting containers..."
     docker compose up -d --remove-orphans
-    
+
     if [ $? -eq 0 ]; then
         success "Services started successfully."
     else
@@ -173,21 +193,30 @@ main() {
     # check_root # Commented out for development/testing in non-root env if needed, but required for docker install
     
     log "Starting installation..."
-    
+
     # 1. Docker Check/Install
+    log "Step 1/5: Checking Docker installation..."
     install_docker
     configure_docker
     progress_bar 2
-    
+
     # 2. Environment Setup
+    log "Step 2/5: Setting up environment..."
     setup_environment
     progress_bar 1
-    
-    # 3. Start Services
+
+    # 3. Initialize Oxidized
+    log "Step 3/5: Initializing Oxidized..."
+    initialize_oxidized
+    progress_bar 1
+
+    # 4. Start Services
+    log "Step 4/5: Starting services..."
     start_services
     progress_bar 5
-    
-    # 4. Verify
+
+    # 5. Verify
+    log "Step 5/5: Verifying installation..."
     verify_installation
     
     echo ""
@@ -199,7 +228,19 @@ main() {
     echo " - Portainer: http://localhost/portainer/"
     echo " - Oxidized:  http://localhost/oxidized/"
     echo ""
-    echo "Logs available in $LOG_FILE"
+    echo "Next steps:"
+    echo " 1. Access the dashboard and login with default credentials"
+    echo "    (Check README.md for details)"
+    echo " 2. Configure Oxidized in the Applications tab"
+    echo "    - Add application: Name='Oxidized', URL='http://oxidized:8888'"
+    echo " 3. Enable backup for devices in the Backup tab"
+    echo ""
+    echo "Documentation:"
+    echo " - Installation logs: $LOG_FILE"
+    echo " - Oxidized setup: OXIDIZED_SETUP.md"
+    echo " - General usage: README.md"
+    echo ""
+    success "All services are running!"
 }
 
 main

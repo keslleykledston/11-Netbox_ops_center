@@ -77,6 +77,33 @@ install_docker() {
         apt-get update && apt-get install -y docker-compose-plugin || error "Failed to install Docker Compose plugin"
         success "Docker Compose installed."
     fi
+    fi
+}
+
+configure_docker() {
+    log "Configuring Docker for Legacy API support..."
+    local daemon_json="/etc/docker/daemon.json"
+    
+    if [ -f "$daemon_json" ]; then
+        warn "$daemon_json already exists. Please manually ensure 'min-api-version': '1.24' is set."
+    else
+        log "Creating $daemon_json..."
+        cat > "$daemon_json" <<EOF
+{
+  "min-api-version": "1.24",
+  "max-concurrent-uploads": 16,
+  "max-concurrent-downloads": 16
+}
+EOF
+        success "Docker configured."
+        
+        log "Restarting Docker..."
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl restart docker || warn "Failed to restart Docker. Please restart manually."
+        else
+            warn "systemctl not found. Please restart Docker manually."
+        fi
+    fi
 }
 
 setup_environment() {
@@ -150,6 +177,7 @@ main() {
     
     # 1. Docker Check/Install
     install_docker
+    configure_docker
     progress_bar 2
     
     # 2. Environment Setup

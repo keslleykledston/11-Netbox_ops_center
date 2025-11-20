@@ -7,6 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { syncFromNetbox, getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
 import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus } from "./oxidized.js";
+import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
 
 const prisma = new PrismaClient();
 const app = express();
@@ -109,7 +110,7 @@ async function lookupAsnName(asn) {
         const fn = Array.isArray(card) ? card.find((x) => x?.[0] === 'fn') : null;
         if (fn && fn[3]) return String(fn[3]);
       }
-    } catch {}
+    } catch { }
   }
   return null;
 }
@@ -349,18 +350,18 @@ app.post("/devices", requireAuth, async (req, res) => {
   }
 
   const data = {
-      tenantId,
-      name,
-      hostname,
-      ipAddress,
-      deviceType,
-      manufacturer,
-      model,
-      status,
-      snmpVersion,
-      snmpCommunity,
-      snmpPort,
-      sshPort: sshPort ? Number(sshPort) : null,
+    tenantId,
+    name,
+    hostname,
+    ipAddress,
+    deviceType,
+    manufacturer,
+    model,
+    status,
+    snmpVersion,
+    snmpCommunity,
+    snmpPort,
+    sshPort: sshPort ? Number(sshPort) : null,
     credUsername: null,
     credPasswordEnc: null,
     credUpdatedAt: null,
@@ -387,8 +388,8 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
   // Sanitize and coerce payload
   const body = req.body || {};
   const allowed = [
-    'name','hostname','ipAddress','manufacturer','model','deviceType','status',
-    'snmpVersion','snmpCommunity','snmpPort','sshPort','osVersion','location','description','tenantId'
+    'name', 'hostname', 'ipAddress', 'manufacturer', 'model', 'deviceType', 'status',
+    'snmpVersion', 'snmpCommunity', 'snmpPort', 'sshPort', 'osVersion', 'location', 'description', 'tenantId'
   ];
   const data = {};
   for (const k of allowed) {
@@ -487,15 +488,15 @@ app.get('/backup/devices', requireAuth, async (req, res) => {
     const hasPassword = !!device.credPasswordEnc;
     const oxidized = node
       ? {
-          present: true,
-          status: node.status || node.last?.status || 'unknown',
-          lastRun: node.time || node.last?.end || null,
-        }
+        present: true,
+        status: node.status || node.last?.status || 'unknown',
+        lastRun: node.time || node.last?.end || null,
+      }
       : {
-          present: false,
-          status: device.backupEnabled ? 'pending' : 'inactive',
-          lastRun: null,
-        };
+        present: false,
+        status: device.backupEnabled ? 'pending' : 'inactive',
+        lastRun: null,
+      };
     return {
       id: device.id,
       name: device.name,
@@ -581,11 +582,22 @@ app.post("/applications", requireAuth, async (req, res) => {
     req.user.tenantId ||
     (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
 
-  const { name, url, apiKey, status = "disconnected", description = null } = req.body || {};
+  const { name, url, apiKey, status = "disconnected", description = null, config = null } = req.body || {};
   if (!name || !url || !apiKey) return res.status(400).json({ error: "name, url, apiKey required" });
 
+  // Validate config if provided
+  let configStr = null;
+  if (config) {
+    try {
+      configStr = typeof config === 'string' ? config : JSON.stringify(config);
+      JSON.parse(configStr); // Validate JSON
+    } catch {
+      return res.status(400).json({ error: "config must be valid JSON" });
+    }
+  }
+
   const created = await prisma.application.create({
-    data: { tenantId, name, url, apiKey, status, description },
+    data: { tenantId, name, url, apiKey, status, description, config: configStr },
   });
   res.status(201).json(created);
 });
@@ -596,7 +608,30 @@ app.patch("/applications/:id", requireAuth, async (req, res) => {
   if (!appRow || (req.user.tenantId && appRow.tenantId !== req.user.tenantId)) {
     return res.status(404).json({ error: "Not found" });
   }
-  const updated = await prisma.application.update({ where: { id }, data: req.body || {} });
+
+  const body = req.body || {};
+  const data = {};
+
+  // Allow updating specific fields
+  const allowed = ['name', 'url', 'apiKey', 'status', 'description', 'config'];
+  for (const k of allowed) {
+    if (body[k] !== undefined) {
+      if (k === 'config' && body[k] !== null) {
+        // Validate config JSON
+        try {
+          const configStr = typeof body[k] === 'string' ? body[k] : JSON.stringify(body[k]);
+          JSON.parse(configStr);
+          data[k] = configStr;
+        } catch {
+          return res.status(400).json({ error: "config must be valid JSON" });
+        }
+      } else {
+        data[k] = body[k];
+      }
+    }
+  }
+
+  const updated = await prisma.application.update({ where: { id }, data });
   res.json(updated);
 });
 
@@ -806,34 +841,63 @@ app.post("/netbox/sync", requireAuth, async (req, res) => {
   }
 });
 
-// Jumpserver: teste básico de conectividade/autorização
+// Jumpserver Integration
 app.post("/jumpserver/test", requireAuth, async (req, res) => {
-  const { url: bodyUrl, apiKey: bodyKey } = req.body || {};
-  const url = bodyUrl || process.env.JUMPSERVER_URL;
-  const apiKey = bodyKey || process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY;
-  if (!url) return res.status(400).json({ ok: false, error: "URL ausente" });
   try {
-    // Primeiro tenta um HEAD na raiz
-    const r1 = await fetch(url, { method: "HEAD" }).catch(() => null);
-    if (r1 && (r1.ok || r1.status === 401)) {
-      return res.json({ ok: true, status: r1.status, message: r1.statusText || "Reachable" });
-    }
-    // Tenta um GET em um endpoint comum de health (se existir)
-    const healthUrl = url.replace(/\/$/, "") + "/api/health/";
-    const h = await fetch(healthUrl, {
-      method: "GET",
-      headers: apiKey ? { Authorization: `Token ${apiKey}` } : {},
-    }).catch(() => null);
-    if (h) {
-      const ok = h.ok || h.status === 401;
-      const text = await h.text().catch(() => "");
-      return res.json({ ok, status: h.status, message: text || h.statusText || "Reachable" });
-    }
-    return res.status(502).json({ ok: false, error: "Sem resposta do Jumpserver" });
+    const { url, apiKey } = req.body || {};
+    if (!url || !apiKey) return res.status(400).json({ error: "URL and API Key required" });
+    const result = await testJumpserverConnection(url, apiKey);
+    res.json(result);
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e?.message || e) });
+    res.status(500).json({ error: String(e?.message || e) });
   }
 });
+
+app.post("/jumpserver/connect/:deviceId", requireAuth, async (req, res) => {
+  try {
+    const deviceId = Number(req.params.deviceId);
+    const device = await prisma.device.findUnique({ where: { id: deviceId } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: "Device not found" });
+    }
+
+    // Find Jumpserver application config
+    // We assume there is one Jumpserver app configured per tenant (or global)
+    const whereApp = {
+      name: { contains: "Jumpserver" }, // Simple heuristic
+      ...(req.user.tenantId ? { tenantId: req.user.tenantId } : {}),
+    };
+
+    // If no tenant specific, try global default tenant if user is admin? 
+    // For now, strict tenant check or fallback to any if no tenantId on user
+
+    const appConfig = await prisma.application.findFirst({
+      where: whereApp,
+    });
+
+    if (!appConfig) {
+      return res.status(404).json({ error: "Jumpserver integration not configured in Applications" });
+    }
+
+    if (!device.ipAddress) {
+      return res.status(400).json({ error: "Device has no IP address" });
+    }
+
+    const asset = await findAssetByIp(appConfig.url, appConfig.apiKey, device.ipAddress);
+    if (!asset) {
+      return res.status(404).json({ error: `Asset with IP ${device.ipAddress} not found in Jumpserver` });
+    }
+
+    const connectUrl = await getConnectUrl(appConfig.url, appConfig.apiKey, asset);
+    res.json({ url: connectUrl });
+
+  } catch (e) {
+    console.error("[Jumpserver] Connect error:", e);
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+
 
 // NetBox catalog (device roles, platforms, ...)
 app.post("/netbox/catalog", requireAuth, async (req, res) => {
@@ -1250,13 +1314,13 @@ app.post("/admin/users", requireAuth, requireAdmin, async (req, res) => {
 app.patch("/admin/users/:id", requireAuth, requireAdmin, async (req, res) => {
   try {
     const id = Number(req.params.id);
-  const { role, isActive, password, tenantId, mustResetPassword } = req.body || {};
-  const data = {};
-  if (typeof role === 'string') data.role = role;
-  if (typeof isActive === 'boolean') data.isActive = isActive;
-  if (tenantId !== undefined) data.tenantId = tenantId;
-  if (password) data.passwordHash = await bcrypt.hash(password, 10);
-  if (typeof mustResetPassword === 'boolean') data.mustResetPassword = mustResetPassword;
+    const { role, isActive, password, tenantId, mustResetPassword } = req.body || {};
+    const data = {};
+    if (typeof role === 'string') data.role = role;
+    if (typeof isActive === 'boolean') data.isActive = isActive;
+    if (tenantId !== undefined) data.tenantId = tenantId;
+    if (password) data.passwordHash = await bcrypt.hash(password, 10);
+    if (typeof mustResetPassword === 'boolean') data.mustResetPassword = mustResetPassword;
     const updated = await prisma.user.update({ where: { id }, data });
     await logAudit(req, 'user-update', { id, role: updated.role, isActive: updated.isActive, tenantId: updated.tenantId, changed: Object.keys(data) });
     res.json({ id: updated.id, email: updated.email, username: updated.username, role: updated.role, isActive: updated.isActive, tenantId: updated.tenantId });

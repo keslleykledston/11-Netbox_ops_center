@@ -34,6 +34,15 @@ const Applications = () => {
   const [sitesList, setSitesList] = useState<string[]>([]);
   const [selectedDeviceTypes, setSelectedDeviceTypes] = useState<string[]>([]);
   const [selectedSites, setSelectedSites] = useState<string[]>([]);
+  const [oxidizedConfigFor, setOxidizedConfigFor] = useState<string | null>(null);
+  const [oxidizedConfig, setOxidizedConfig] = useState({
+    interval: 3600,
+    timeout: 30,
+    retries: 3,
+    threads: 30,
+    use_syslog: false,
+    debug: false,
+  });
 
   const testConnection = async (appId: string) => {
     updateApplication(appId, { status: "testing" });
@@ -92,8 +101,9 @@ const Applications = () => {
 
   const isNetbox = (app: Application) => /netbox/i.test(app.name);
   const isJumpserver = (app: Application) => /jumpserver/i.test(app.name);
+  const isOxidized = (app: Application) => /oxidized/i.test(app.name);
 
-  const loadCatalog = async (app: Application, what: ("device-roles"|"platforms"|"device-types"|"sites")[]) => {
+  const loadCatalog = async (app: Application, what: ("device-roles" | "platforms" | "device-types" | "sites")[]) => {
     try {
       const out: any = await api.netboxCatalog(what, app.url, app.apiKey);
       if (what.includes("device-roles")) setRolesList(Array.isArray(out.roles) ? out.roles : []);
@@ -126,10 +136,39 @@ const Applications = () => {
     try {
       const res = await api.jumpserverTest(app.url, app.apiKey);
       const ok = (res as any)?.ok;
-      toast({ title: ok ? "Jumpserver acessível" : "Falha no Jumpserver", description: `Status: ${(res as any)?.status || (res as any)?.error || ""}` , variant: ok ? "default" : "destructive" });
+      toast({ title: ok ? "Jumpserver acessível" : "Falha no Jumpserver", description: `Status: ${(res as any)?.status || (res as any)?.error || ""}`, variant: ok ? "default" : "destructive" });
       updateApplication(app.id, { status: ok ? "connected" : "disconnected" });
     } catch (e) {
       toast({ title: "Falha no teste", description: String((e as any)?.message || e), variant: "destructive" });
+    }
+  };
+
+  const loadOxidizedConfig = (app: Application) => {
+    try {
+      if ((app as any).config) {
+        const parsed = JSON.parse((app as any).config);
+        setOxidizedConfig({
+          interval: parsed.interval || 3600,
+          timeout: parsed.timeout || 30,
+          retries: parsed.retries || 3,
+          threads: parsed.threads || 30,
+          use_syslog: parsed.use_syslog || false,
+          debug: parsed.debug || false,
+        });
+      }
+    } catch {
+      // Use defaults
+    }
+    setOxidizedConfigFor(app.id);
+  };
+
+  const saveOxidizedConfig = async (app: Application) => {
+    try {
+      await api.updateApplication(app.id, { config: oxidizedConfig });
+      toast({ title: "Configuração salva", description: "Parâmetros do Oxidized atualizados com sucesso." });
+      setOxidizedConfigFor(null);
+    } catch (e) {
+      toast({ title: "Erro ao salvar", description: String((e as any)?.message || e), variant: "destructive" });
     }
   };
 
@@ -140,12 +179,12 @@ const Applications = () => {
   };
 
   const getStatusText = (status: Application["status"]) =>
-      status === "connected" ? "Conectado" : status === "testing" ? "Testando" : "Desconectado";
+    status === "connected" ? "Conectado" : status === "testing" ? "Testando" : "Desconectado";
 
   const getStatusBadgeClass = (status: Application["status"]) =>
-      status === "connected" ? "bg-success/10 text-success" :
+    status === "connected" ? "bg-success/10 text-success" :
       status === "testing" ? "bg-warning/10 text-warning" :
-      "bg-destructive/10 text-destructive";
+        "bg-destructive/10 text-destructive";
 
   return (
     <DashboardLayout>
@@ -232,9 +271,9 @@ const Applications = () => {
                 </div>
                 <div className="space-y-2">
                   <Label>API Key</Label>
-                  <Input 
-                    type="password" 
-                    value={editingId === app.id ? editForm.apiKey : app.apiKey} 
+                  <Input
+                    type="password"
+                    value={editingId === app.id ? editForm.apiKey : app.apiKey}
                     readOnly={editingId !== app.id}
                     onChange={(e) => setEditForm(prev => ({ ...prev, apiKey: e.target.value }))}
                     placeholder="Sua chave de API"
@@ -243,17 +282,17 @@ const Applications = () => {
                 <div className="flex gap-2 flex-wrap">
                   {editingId === app.id ? (
                     <>
-                      <Button 
-                        size="sm" 
+                      <Button
+                        size="sm"
                         onClick={() => saveEdit(app.id)}
                         disabled={!editForm.url || !editForm.apiKey}
                       >
                         <Save className="h-4 w-4 mr-1" />
                         Salvar
                       </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={cancelEditing}
                       >
                         <X className="h-4 w-4 mr-1" />
@@ -262,9 +301,9 @@ const Applications = () => {
                     </>
                   ) : (
                     <>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => testConnection(app.id)}
                         disabled={app.status === "testing"}
                       >
@@ -428,9 +467,88 @@ const Applications = () => {
                           <Settings className="h-4 w-4 mr-1" /> Testar Jumpserver
                         </Button>
                       )}
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      {isOxidized(app) && (
+                        <>
+                          <Button variant="outline" size="sm" onClick={() => oxidizedConfigFor === app.id ? setOxidizedConfigFor(null) : loadOxidizedConfig(app)}>
+                            <Settings className="h-4 w-4 mr-1" /> Configurar Oxidized
+                          </Button>
+                          {oxidizedConfigFor === app.id && (
+                            <div className="w-full border border-border/40 rounded p-3 space-y-3">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="space-y-1">
+                                  <Label className="text-sm">Interval (segundos)</Label>
+                                  <Input
+                                    type="number"
+                                    value={oxidizedConfig.interval}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, interval: Number(e.target.value) })}
+                                    placeholder="3600"
+                                  />
+                                  <p className="text-xs text-muted-foreground">Intervalo entre coletas de backup</p>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-sm">Timeout (segundos)</Label>
+                                  <Input
+                                    type="number"
+                                    value={oxidizedConfig.timeout}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, timeout: Number(e.target.value) })}
+                                    placeholder="30"
+                                  />
+                                  <p className="text-xs text-muted-foreground">Timeout de conexão SSH</p>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-sm">Retries</Label>
+                                  <Input
+                                    type="number"
+                                    value={oxidizedConfig.retries}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, retries: Number(e.target.value) })}
+                                    placeholder="3"
+                                  />
+                                  <p className="text-xs text-muted-foreground">Número de tentativas em caso de falha</p>
+                                </div>
+                                <div className="space-y-1">
+                                  <Label className="text-sm">Threads</Label>
+                                  <Input
+                                    type="number"
+                                    value={oxidizedConfig.threads}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, threads: Number(e.target.value) })}
+                                    placeholder="30"
+                                  />
+                                  <p className="text-xs text-muted-foreground">Número de threads paralelas</p>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-6">
+                                <label className="flex items-center gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={oxidizedConfig.use_syslog}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, use_syslog: e.target.checked })}
+                                  /> Use Syslog
+                                </label>
+                                <label className="flex items-center gap-2 text-sm">
+                                  <input
+                                    type="checkbox"
+                                    checked={oxidizedConfig.debug}
+                                    onChange={(e) => setOxidizedConfig({ ...oxidizedConfig, debug: e.target.checked })}
+                                  /> Debug Mode
+                                </label>
+                              </div>
+                              <div className="flex items-center gap-2 pt-2">
+                                <Button size="sm" onClick={() => saveOxidizedConfig(app)}>Salvar Configuração</Button>
+                                <Button size="sm" variant="outline" onClick={() => setOxidizedConfigFor(null)}>Cancelar</Button>
+                              </div>
+                              <div className="border-t pt-2">
+                                <p className="text-xs text-muted-foreground">
+                                  <strong>Nota:</strong> Estas configurações são armazenadas para referência. Para aplicá-las ao Oxidized,
+                                  atualize o arquivo de configuração do container/serviço Oxidized com estes valores.
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => startEditing(app)}
                       >
                         <Settings className="h-4 w-4 mr-1" />

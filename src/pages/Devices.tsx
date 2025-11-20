@@ -117,29 +117,29 @@ export default function Devices() {
 
         <Card>
           <CardHeader>
-          <div className="flex items-center gap-4">
-            <div className="relative flex-1 max-w-sm">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                placeholder="Buscar dispositivos..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10"
-              />
+            <div className="flex items-center gap-4">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Buscar dispositivos..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="pl-10"
+                />
+              </div>
+              <div className="w-[260px]">
+                <Select value={selectedTenantId} onValueChange={(v) => { setSelectedTenantId(v); refreshDevices(); }}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione o Tenant" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {tenants.map((t) => (
+                      <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="w-[260px]">
-              <Select value={selectedTenantId} onValueChange={(v) => { setSelectedTenantId(v); refreshDevices(); }}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Selecione o Tenant" />
-                </SelectTrigger>
-                <SelectContent>
-                  {tenants.map((t) => (
-                    <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -191,6 +191,22 @@ export default function Devices() {
                               </DropdownMenuTrigger>
                               <DropdownMenuContent align="end">
                                 <DropdownMenuItem onClick={() => openEditDialog(device)}>Editar</DropdownMenuItem>
+                                <DropdownMenuItem onClick={async () => {
+                                  try {
+                                    toast({ title: "Conectando...", description: "Obtendo URL de conexão..." });
+                                    const res: any = await api.jumpserverConnect(device.id);
+                                    if (res?.url) {
+                                      window.open(res.url, '_blank');
+                                      toast({ title: "Conexão iniciada", description: "Terminal aberto em nova aba." });
+                                    } else {
+                                      throw new Error("URL não retornada");
+                                    }
+                                  } catch (e: any) {
+                                    toast({ title: "Erro na conexão", description: e.message || "Falha ao conectar", variant: "destructive" });
+                                  }
+                                }}>
+                                  Conectar (Jumpserver)
+                                </DropdownMenuItem>
                                 <DropdownMenuItem>Configurações</DropdownMenuItem>
                                 <DropdownMenuItem>Logs</DropdownMenuItem>
                                 <DropdownMenuItem

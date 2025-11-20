@@ -19,14 +19,14 @@ async function apiFetch(path: string, opts: RequestInit = {}) {
   if (!res.ok) {
     // Redireciona apenas para 401 (token inválido/ausente). Mantém 403 (sem permissão) conectado.
     if (res.status === 401 && getToken() && !String(path).startsWith('/auth/')) {
-      try { localStorage.removeItem("auth_token"); } catch {}
-      try { sonnerToast("Sessão expirada. Faça login novamente."); } catch {}
+      try { localStorage.removeItem("auth_token"); } catch { }
+      try { sonnerToast("Sessão expirada. Faça login novamente."); } catch { }
       if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
         window.location.replace('/login');
       }
     }
     if (res.status === 403 && !String(path).startsWith('/auth/')) {
-      try { sonnerToast("Acesso negado. Você não tem permissão para esta ação."); } catch {}
+      try { sonnerToast("Acesso negado. Você não tem permissão para esta ação."); } catch { }
     }
     let message = `HTTP ${res.status}`;
     try {
@@ -154,6 +154,9 @@ export const api = {
   },
   async jumpserverTest(url?: string, apiKey?: string) {
     return apiFetch(`/jumpserver/test`, { method: "POST", body: JSON.stringify({ url, apiKey }) });
+  },
+  async jumpserverConnect(deviceId: string | number) {
+    return apiFetch(`/jumpserver/connect/${deviceId}`, { method: "POST" });
   },
   async getStatsOverview() {
     return apiFetch(`/stats/overview`, { method: "GET" });

@@ -72,6 +72,7 @@ model Application {
   apiKey      String
   status      String   @default("disconnected")
   description String?
+  config      String?  // JSON string for app-specific configs (Oxidized interval, timeout, etc.)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

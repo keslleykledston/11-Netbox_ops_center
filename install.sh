@@ -77,7 +77,6 @@ install_docker() {
         apt-get update && apt-get install -y docker-compose-plugin || error "Failed to install Docker Compose plugin"
         success "Docker Compose installed."
     fi
-    fi
 }
 
 configure_docker() {

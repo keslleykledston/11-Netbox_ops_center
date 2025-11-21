@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { LogViewer } from "@/components/LogViewer";
 import { useServiceHealth } from "@/hooks/use-service-health";
-import { Activity, Database, Server, Network, Layers } from "lucide-react";
+import { Activity, Database, Server, Network, Layers, FileText } from "lucide-react";
 
 const Maintenance = () => {
   const { health } = useServiceHealth();

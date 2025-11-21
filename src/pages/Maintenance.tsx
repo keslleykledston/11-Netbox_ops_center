@@ -36,11 +36,15 @@ const Maintenance = () => {
     }
     try {
       const reg = await api.listAsnRegistry();
-      setAsnList((reg as any[]).map((r) => ({ id: r.id, asn: r.asn, name: r.name })));
+      if (Array.isArray(reg)) {
+        setAsnList(reg.map((r: any) => ({ id: r.id, asn: r.asn, name: r.name })));
+      }
       setAsnEdit({});
-    } catch { }
+    } catch (e) {
+      console.error("Failed to load ASN registry:", e);
+    }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { console.log("Maintenance mounted"); load(); }, []);
 
   const loadAudit = async () => {
     try {
@@ -173,17 +177,17 @@ const Maintenance = () => {
         <LogViewer open={logViewerOpen} onOpenChange={setLogViewerOpen} />
 
         {/* Service Health Dashboard */}
-        {health && (
+        {health ? (
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             <Card className="bg-card/50">
               <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Server className="h-4 w-4" /> API
                 </div>
-                <div className={`text-lg font-bold ${health.services.api.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
-                  {health.services.api.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                <div className={`text-lg font-bold ${health.services?.api?.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services?.api?.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
                 </div>
-                <div className="text-xs text-muted-foreground">Porta {health.services.api.port}</div>
+                <div className="text-xs text-muted-foreground">Porta {health.services?.api?.port}</div>
               </CardContent>
             </Card>
 
@@ -192,10 +196,10 @@ const Maintenance = () => {
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Network className="h-4 w-4" /> SNMP
                 </div>
-                <div className={`text-lg font-bold ${health.services.snmp.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
-                  {health.services.snmp.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                <div className={`text-lg font-bold ${health.services?.snmp?.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services?.snmp?.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
                 </div>
-                <div className="text-xs text-muted-foreground">Porta {health.services.snmp.port}</div>
+                <div className="text-xs text-muted-foreground">Porta {health.services?.snmp?.port}</div>
               </CardContent>
             </Card>
 
@@ -204,10 +208,10 @@ const Maintenance = () => {
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Database className="h-4 w-4" /> Redis
                 </div>
-                <div className={`text-lg font-bold ${health.services.redis.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
-                  {health.services.redis.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                <div className={`text-lg font-bold ${health.services?.redis?.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services?.redis?.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
                 </div>
-                <div className="text-xs text-muted-foreground">Porta {health.services.redis.port}</div>
+                <div className="text-xs text-muted-foreground">Porta {health.services?.redis?.port}</div>
               </CardContent>
             </Card>
 
@@ -216,8 +220,8 @@ const Maintenance = () => {
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Database className="h-4 w-4" /> Database
                 </div>
-                <div className={`text-lg font-bold ${health.services.database.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
-                  {health.services.database.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                <div className={`text-lg font-bold ${health.services?.database?.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services?.database?.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
                 </div>
                 <div className="text-xs text-muted-foreground">Prisma</div>
               </CardContent>
@@ -228,13 +232,15 @@ const Maintenance = () => {
                 <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
                   <Layers className="h-4 w-4" /> Queues
                 </div>
-                <div className={`text-lg font-bold ${health.services.queues.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
-                  {health.services.queues.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                <div className={`text-lg font-bold ${health.services?.queues?.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services?.queues?.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
                 </div>
-                <div className="text-xs text-muted-foreground">{health.services.queues.workers} Workers</div>
+                <div className="text-xs text-muted-foreground">{health.services?.queues?.workers} Workers</div>
               </CardContent>
             </Card>
           </div>
+        ) : (
+          <div className="text-center p-4 text-muted-foreground">Carregando status dos serviços...</div>
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -1643,7 +1643,7 @@ app.get('/health/services', async (_req, res) => {
   // Check SNMP server
   try {
     const snmpUrl = process.env.SNMP_SERVER_URL || 'http://localhost:3001';
-    const snmpRes = await fetch(`${snmpUrl}/api/snmp/ping?ip=127.0.0.1&community=public&port=161`, {
+    const snmpRes = await fetch(`${snmpUrl}/health`, {
       method: 'GET',
       signal: AbortSignal.timeout(2000),
     }).catch(() => null);
@@ -1653,6 +1653,15 @@ app.get('/health/services', async (_req, res) => {
   }
 
   // Check Redis
+  try {
+    const { connection } = await import('./queues/index.js');
+    await connection.ping();
+    services.redis.status = 'ok';
+  } catch {
+    services.redis.status = 'error';
+  }
+
+  // Check Database
   try {
     await prisma.$queryRaw`SELECT 1`;
     services.database.status = 'ok';

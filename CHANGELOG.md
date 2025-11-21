@@ -36,7 +36,7 @@ Todas as mudanças notáveis deste projeto serão documentadas aqui.
   - Redis
   - Database (Prisma)
   - Queue Workers
-- **Health Check**: Endpoint `/health/services` para monitoramento centralizado da saúde dos microserviços.
+- **Health Check**: Endpoint `/health/services` aprimorado com verificação real do Redis e endpoint de saúde dedicado no servidor SNMP.
 - **Scripts Utilitários**: Adicionados scripts para diagnóstico e manutenção (`check_checkmk.js`, `update_checkmk.js`, `test_snmp_discovery.js`, `clear_failed_jobs.js`).
 
 ## [v0.1.0] - 2025-11-14

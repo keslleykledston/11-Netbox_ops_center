@@ -14,6 +14,10 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
 // Constantes configuráveis
 const SNMP_MAX_REPETITIONS = Number(process.env.SNMP_MAX_REPETITIONS ?? 20);
 const SNMP_GLOBAL_TIMEOUT_MS = Number(process.env.SNMP_GLOBAL_TIMEOUT_MS ?? 60000);

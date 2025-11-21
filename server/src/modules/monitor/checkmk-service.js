@@ -48,22 +48,49 @@ async function checkmkRequest(path, options = {}) {
 }
 
 function normalizeHostPayload(device) {
+  const sanitizedName = device.name.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  const attributes = {
+    ipaddress: device.ipAddress,
+    alias: device.hostname || device.name,
+    // CRITICAL: Disable Checkmk agent completely - SNMP only
+    tag_agent: 'no-agent',  // No Checkmk agent
+    // Add labels for organization
+    labels: {
+      device_type: 'network',
+      managed_by: 'netbox_ops_center',
+    },
+  };
+
+  // Add SNMP community if available
+  if (device.snmpCommunity) {
+    attributes.snmp_community = {
+      type: 'v1_v2_community',
+      community: device.snmpCommunity,
+    };
+  }
+
+  // Set SNMP version datasource tag
+  if (device.snmpVersion) {
+    const version = device.snmpVersion.toLowerCase();
+    if (version.includes('v2') || version.includes('2c')) {
+      attributes.tag_snmp_ds = 'snmp-v2';
+    } else if (version.includes('v1')) {
+      attributes.tag_snmp_ds = 'snmp-v1';
+    }
+  }
+
   return {
     folder: '/',
-    host_name: device.name,
-    attributes: {
-      ipaddress: device.ipAddress,
-      alias: device.hostname || device.name,
-      tags: device.deviceType ? { device_type: device.deviceType } : undefined,
-    },
+    host_name: sanitizedName,
+    attributes,
   };
 }
 
 export async function addHostToCheckmk(device) {
   if (!isConfigured()) return { skipped: true };
   const payload = normalizeHostPayload(device);
-  return checkmkRequest(`/check_mk/api/1.0/domain-types/host_config/objects/${encodeURIComponent(device.name)}`, {
-    method: 'PUT',
+  return checkmkRequest(`/check_mk/api/1.0/domain-types/host_config/collections/all`, {
+    method: 'POST',
     body: JSON.stringify(payload),
   });
 }
@@ -71,15 +98,20 @@ export async function addHostToCheckmk(device) {
 export async function updateHostInCheckmk(_deviceId, device) {
   if (!isConfigured()) return { skipped: true };
   const payload = normalizeHostPayload(device);
-  return checkmkRequest(`/check_mk/api/1.0/domain-types/host_config/objects/${encodeURIComponent(device.name)}`, {
+  // Use sanitized hostname to match what was created
+  const sanitizedName = device.name.replace(/[^a-zA-Z0-9_.-]/g, '_');
+  return checkmkRequest(`/check_mk/api/1.0/domain-types/host_config/objects/${encodeURIComponent(sanitizedName)}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
-export async function deleteHostFromCheckmk(deviceIdOrName) {
+export async function deleteHostFromCheckmk(device) {
   if (!isConfigured()) return { skipped: true };
-  const hostName = typeof deviceIdOrName === 'string' ? deviceIdOrName : String(deviceIdOrName);
+  // Use sanitized hostname to match what was created
+  const hostName = typeof device === 'string'
+    ? device.replace(/[^a-zA-Z0-9_.-]/g, '_')
+    : (device.name || String(device)).replace(/[^a-zA-Z0-9_.-]/g, '_');
   return checkmkRequest(`/check_mk/api/1.0/domain-types/host_config/objects/${encodeURIComponent(hostName)}`, {
     method: 'DELETE',
   });

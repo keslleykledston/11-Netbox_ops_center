@@ -130,7 +130,7 @@ export async function handleSshWebsocket({ prisma, sessionId, sessionKey, ws, us
     prisma.sshSession.update({
       where: { id: session.id },
       data: { status: 'active' },
-    }).catch(() => {});
+    }).catch(() => { });
     ssh.shell({ term: 'xterm-color' }, (err, sshStream) => {
       if (err) {
         ws.send(JSON.stringify({ type: 'error', message: err.message }));
@@ -165,7 +165,40 @@ export async function handleSshWebsocket({ prisma, sessionId, sessionKey, ws, us
     port: device.sshPort || 22,
     username: device.credUsername,
     password,
-    readyTimeout: 15000,
+    readyTimeout: 30000, // Aumentado para 30s para dispositivos lentos
+    keepaliveInterval: 10000, // Envia keepalive a cada 10s
+    algorithms: {
+      kex: [
+        'diffie-hellman-group1-sha1',
+        'diffie-hellman-group14-sha1',
+        'ecdh-sha2-nistp256',
+        'ecdh-sha2-nistp384',
+        'ecdh-sha2-nistp521',
+        'diffie-hellman-group-exchange-sha256',
+        'diffie-hellman-group14-sha256'
+      ],
+      cipher: [
+        'aes128-ctr',
+        'aes192-ctr',
+        'aes256-ctr',
+        'aes128-cbc',
+        '3des-cbc',
+        'aes192-cbc',
+        'aes256-cbc'
+      ],
+      serverHostKey: [
+        'ssh-rsa',
+        'ssh-dss',
+        'ecdsa-sha2-nistp256',
+        'ecdsa-sha2-nistp384',
+        'ecdsa-sha2-nistp521'
+      ],
+      hmac: [
+        'hmac-sha2-256',
+        'hmac-sha2-512',
+        'hmac-sha1'
+      ]
+    },
   });
 
   ws.on('message', (raw) => {

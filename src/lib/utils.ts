@@ -61,6 +61,8 @@ export interface Device {
   snmpPort?: number;
   sshPort?: number | null;
   backupEnabled?: boolean;
+  monitoringEnabled?: boolean;
+  snmpStatus?: string;
   credUsername?: string | null;
   hasCredPassword?: boolean;
   monitoring?: {
@@ -190,11 +192,11 @@ class LocalDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    
+
     if (!data[this.TENANTS_KEY]) {
       data[this.TENANTS_KEY] = [];
     }
-    
+
     data[this.TENANTS_KEY].push(newTenant);
     this.setData(data);
     return newTenant;
@@ -204,15 +206,15 @@ class LocalDatabase {
     const data = this.getData();
     const tenants = data[this.TENANTS_KEY] || [];
     const index = tenants.findIndex((t: Tenant) => t.id === id);
-    
+
     if (index === -1) return null;
-    
+
     tenants[index] = {
       ...tenants[index],
       ...updates,
       updatedAt: new Date().toISOString()
     };
-    
+
     this.setData(data);
     return tenants[index];
   }
@@ -221,9 +223,9 @@ class LocalDatabase {
     const data = this.getData();
     const tenants = data[this.TENANTS_KEY] || [];
     const filteredTenants = tenants.filter((t: Tenant) => t.id !== id);
-    
+
     if (filteredTenants.length === tenants.length) return false;
-    
+
     data[this.TENANTS_KEY] = filteredTenants;
     this.setData(data);
     return true;
@@ -244,11 +246,11 @@ class LocalDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    
+
     if (!data[this.CLIENTS_KEY]) {
       data[this.CLIENTS_KEY] = [];
     }
-    
+
     data[this.CLIENTS_KEY].push(newClient);
     this.setData(data);
     return newClient;
@@ -258,15 +260,15 @@ class LocalDatabase {
     const data = this.getData();
     const clients = data[this.CLIENTS_KEY] || [];
     const index = clients.findIndex((c: Client) => c.id === id);
-    
+
     if (index === -1) return null;
-    
+
     clients[index] = {
       ...clients[index],
       ...updates,
       updatedAt: new Date().toISOString()
     };
-    
+
     this.setData(data);
     return clients[index];
   }
@@ -275,9 +277,9 @@ class LocalDatabase {
     const data = this.getData();
     const clients = data[this.CLIENTS_KEY] || [];
     const filteredClients = clients.filter((c: Client) => c.id !== id);
-    
+
     if (filteredClients.length === clients.length) return false;
-    
+
     data[this.CLIENTS_KEY] = filteredClients;
     this.setData(data);
     return true;
@@ -298,11 +300,11 @@ class LocalDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    
+
     if (!data[this.USERS_KEY]) {
       data[this.USERS_KEY] = [];
     }
-    
+
     data[this.USERS_KEY].push(newUser);
     this.setData(data);
     return newUser;
@@ -312,15 +314,15 @@ class LocalDatabase {
     const data = this.getData();
     const users = data[this.USERS_KEY] || [];
     const index = users.findIndex((u: User) => u.id === id);
-    
+
     if (index === -1) return null;
-    
+
     users[index] = {
       ...users[index],
       ...updates,
       updatedAt: new Date().toISOString()
     };
-    
+
     this.setData(data);
     return users[index];
   }
@@ -329,9 +331,9 @@ class LocalDatabase {
     const data = this.getData();
     const users = data[this.USERS_KEY] || [];
     const filteredUsers = users.filter((u: User) => u.id !== id);
-    
+
     if (filteredUsers.length === users.length) return false;
-    
+
     data[this.USERS_KEY] = filteredUsers;
     this.setData(data);
     return true;
@@ -357,11 +359,11 @@ class LocalDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    
+
     if (!data[this.DEVICES_KEY]) {
       data[this.DEVICES_KEY] = [];
     }
-    
+
     data[this.DEVICES_KEY].push(newDevice);
     this.ensureDeviceStores(newDevice);
     this.setData(data);
@@ -372,15 +374,15 @@ class LocalDatabase {
     const data = this.getData();
     const devices = data[this.DEVICES_KEY] || [];
     const index = devices.findIndex((d: Device) => d.id === id);
-    
+
     if (index === -1) return null;
-    
+
     devices[index] = {
       ...devices[index],
       ...updates,
       updatedAt: new Date().toISOString()
     };
-    
+
     this.setData(data);
     return devices[index];
   }
@@ -389,9 +391,9 @@ class LocalDatabase {
     const data = this.getData();
     const devices = data[this.DEVICES_KEY] || [];
     const filteredDevices = devices.filter((d: Device) => d.id !== id);
-    
+
     if (filteredDevices.length === devices.length) return false;
-    
+
     data[this.DEVICES_KEY] = filteredDevices;
     this.setData(data);
     return true;
@@ -412,11 +414,11 @@ class LocalDatabase {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
-    
+
     if (!data[this.APPLICATIONS_KEY]) {
       data[this.APPLICATIONS_KEY] = [];
     }
-    
+
     data[this.APPLICATIONS_KEY].push(newApplication);
     this.setData(data);
     return newApplication;
@@ -426,15 +428,15 @@ class LocalDatabase {
     const data = this.getData();
     const applications = data[this.APPLICATIONS_KEY] || [];
     const index = applications.findIndex((a: Application) => a.id === id);
-    
+
     if (index === -1) return null;
-    
+
     applications[index] = {
       ...applications[index],
       ...updates,
       updatedAt: new Date().toISOString()
     };
-    
+
     this.setData(data);
     return applications[index];
   }
@@ -443,9 +445,9 @@ class LocalDatabase {
     const data = this.getData();
     const applications = data[this.APPLICATIONS_KEY] || [];
     const filteredApplications = applications.filter((a: Application) => a.id !== id);
-    
+
     if (filteredApplications.length === applications.length) return false;
-    
+
     data[this.APPLICATIONS_KEY] = filteredApplications;
     this.setData(data);
     return true;

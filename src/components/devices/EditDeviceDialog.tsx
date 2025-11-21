@@ -3,6 +3,8 @@ import type { Device } from "@/lib/utils";
 import { useDevices } from "@/hooks/use-mobile";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/lib/api";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 
 type Props = {
   open: boolean;
@@ -31,6 +33,8 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
     snmpPort: 161,
     sshPort: 22,
     tenantId: "",
+    backupEnabled: false,
+    monitoringEnabled: false,
   });
 
   useEffect(() => {
@@ -52,11 +56,13 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
         snmpPort: device.snmpPort || 161,
         sshPort: device.sshPort || 22,
         tenantId: device.tenantId || "",
+        backupEnabled: device.backupEnabled || false,
+        monitoringEnabled: device.monitoringEnabled || false,
       });
       // Carrega credenciais atuais (mascara)
       api.getDeviceCredentials(device.id).then((c: any) => {
         setForm(prev => ({ ...prev, credentials: { username: c?.username || "", password: c?.hasPassword ? "********" : "" } }));
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }, [device]);
 
@@ -72,6 +78,14 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
       setForm((prev) => ({ ...prev, sshPort: Number(value) }));
     } else {
       setForm((prev) => ({ ...prev, [name]: value }));
+    }
+  };
+
+  const onSwitchChange = (name: string, checked: boolean) => {
+    if (name === 'isActive') {
+      setForm(prev => ({ ...prev, status: checked ? 'active' : 'inactive' }));
+    } else {
+      setForm(prev => ({ ...prev, [name]: checked }));
     }
   };
 
@@ -92,6 +106,8 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
       snmpPort: form.snmpPort,
       sshPort: form.sshPort,
       tenantId: form.tenantId,
+      backupEnabled: form.backupEnabled,
+      monitoringEnabled: form.monitoringEnabled,
     };
 
     try {
@@ -105,7 +121,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
           if (Object.keys(payload).length > 0) {
             await api.updateDeviceCredentials(device.id, payload);
           }
-        } catch {}
+        } catch { }
         toast({ title: "Dispositivo atualizado", description: "Alterações salvas com sucesso!" });
         onOpenChange(false);
       } else {
@@ -118,7 +134,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center">
-      <div className="bg-zinc-900 text-white rounded-lg shadow-xl w-full max-w-2xl">
+      <div className="bg-zinc-900 text-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-zinc-700">
           <h2 className="text-lg font-semibold">Editar Dispositivo</h2>
         </div>
@@ -154,14 +170,31 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
                 <option value="other">Outro</option>
               </select>
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-sm">Status</span>
-              <select name="status" value={form.status} onChange={onChange} className="border rounded px-3 py-2 bg-zinc-800 text-white border-zinc-700 focus:outline-none focus:ring-2 focus:ring-zinc-500">
-                <option value="active">Ativo</option>
-                <option value="maintenance">Manutenção</option>
-                <option value="inactive">Inativo</option>
-              </select>
-            </label>
+          </div>
+
+          {/* Switches */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-zinc-800/50 rounded-lg border border-zinc-700">
+            <div className="flex items-center justify-between space-x-2">
+              <Label htmlFor="isActive" className="flex flex-col space-y-1">
+                <span>Ativo</span>
+                <span className="font-normal text-xs text-muted-foreground">Dispositivo operacional</span>
+              </Label>
+              <Switch id="isActive" checked={form.status === 'active'} onCheckedChange={(c) => onSwitchChange('isActive', c)} />
+            </div>
+            <div className="flex items-center justify-between space-x-2">
+              <Label htmlFor="backupEnabled" className="flex flex-col space-y-1">
+                <span>Backup</span>
+                <span className="font-normal text-xs text-muted-foreground">Coleta automática</span>
+              </Label>
+              <Switch id="backupEnabled" checked={form.backupEnabled} onCheckedChange={(c) => onSwitchChange('backupEnabled', c)} />
+            </div>
+            <div className="flex items-center justify-between space-x-2">
+              <Label htmlFor="monitoringEnabled" className="flex flex-col space-y-1">
+                <span>Monitorar</span>
+                <span className="font-normal text-xs text-muted-foreground">Sync com Checkmk</span>
+              </Label>
+              <Switch id="monitoringEnabled" checked={form.monitoringEnabled} onCheckedChange={(c) => onSwitchChange('monitoringEnabled', c)} />
+            </div>
           </div>
 
           <div className="mt-2">
@@ -177,7 +210,7 @@ export default function EditDeviceDialog({ open, onOpenChange, device }: Props) 
                 <button type="button" className="text-xs text-blue-400 mt-1 w-max" onClick={async () => {
                   if (!device) return;
                   if (form.credentials.password === '********') {
-                    try { const c: any = await api.getDeviceCredentials(device.id, true); setForm(prev => ({ ...prev, credentials: { ...prev.credentials, password: c?.password || '' } })); } catch {}
+                    try { const c: any = await api.getDeviceCredentials(device.id, true); setForm(prev => ({ ...prev, credentials: { ...prev.credentials, password: c?.password || '' } })); } catch { }
                   } else {
                     setForm(prev => ({ ...prev, credentials: { ...prev.credentials, password: '********' } }));
                   }

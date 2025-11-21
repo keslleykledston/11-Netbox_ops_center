@@ -254,5 +254,8 @@ export const api = {
   async getAccessSessionLog(id: number | string) {
     return apiFetch(`/access/sessions/${id}/log`, { method: 'GET' });
   },
+  async getServiceHealth() {
+    return apiFetch('/health/services', { method: 'GET' });
+  },
 };
 import { toast as sonnerToast } from "sonner";

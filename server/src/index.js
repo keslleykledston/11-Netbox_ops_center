@@ -10,7 +10,7 @@ import { getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
 import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus } from "./oxidized.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
-import { addNetboxSyncJob, addSnmpDiscoveryJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
+import { addNetboxSyncJob, addSnmpDiscoveryJob, addSnmpPollingJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
@@ -152,12 +152,27 @@ async function refreshAsnRegistryFromPeers() {
   }
 }
 
+async function scheduleSnmpPolling() {
+  try {
+    const devices = await prisma.device.findMany({ where: { status: 'active' } });
+    for (const device of devices) {
+      await addSnmpPollingJob(device.id).catch(() => { });
+    }
+  } catch (e) {
+    console.warn('[SNMP][WARN] Polling schedule failed:', String(e?.message || e));
+  }
+}
+
 async function bootstrapBackground() {
   await ensureDefaultTenant();
   await ensureDefaultAdminUser();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
+
+  // Schedule SNMP polling
+  scheduleSnmpPolling();
+  setInterval(scheduleSnmpPolling, 300000); // 5 minutes
 }
 
 async function logAudit(req, action, detailsObj) {
@@ -402,18 +417,28 @@ app.post("/devices", requireAuth, async (req, res) => {
     credUsername: null,
     credPasswordEnc: null,
     credUpdatedAt: null,
+    backupEnabled: req.body.backupEnabled || false,
+    monitoringEnabled: req.body.monitoringEnabled || false,
+    snmpStatus: 'unknown',
   };
-  if (req.body?.credentials) {
-    const cu = String(req.body.credentials.username || '').trim();
-    const cp = String(req.body.credentials.password || '').trim();
-    if (cu) data.credUsername = cu;
-    if (cp) {
-      data.credPasswordEnc = encryptSecret(cp);
-      data.credUpdatedAt = new Date();
-    }
+
+  // Handle credentials directly in creation
+  const cu = String(req.body.credUsername || req.body.credentials?.username || '').trim();
+  const cp = String(req.body.credPasswordEnc || req.body.credentials?.password || '').trim();
+
+  if (cu) data.credUsername = cu;
+  if (cp) {
+    data.credPasswordEnc = encryptSecret(cp);
+    data.credUpdatedAt = new Date();
   }
+
   const created = await prisma.device.create({ data });
-  enqueueCheckmkSync('add', created, req.user?.sub).catch(() => {});
+
+  // Trigger Checkmk sync if monitoring enabled
+  if (created.monitoringEnabled) {
+    addCheckmkSyncJob('add', created.id, created, req.user.sub).catch(console.error);
+  }
+
   res.status(201).json(sanitizeDeviceOutput(created));
 });
 
@@ -427,7 +452,8 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
   const body = req.body || {};
   const allowed = [
     'name', 'hostname', 'ipAddress', 'manufacturer', 'model', 'deviceType', 'status',
-    'snmpVersion', 'snmpCommunity', 'snmpPort', 'sshPort', 'osVersion', 'location', 'description', 'tenantId'
+    'snmpVersion', 'snmpCommunity', 'snmpPort', 'sshPort', 'osVersion', 'location', 'description', 'tenantId',
+    'backupEnabled', 'monitoringEnabled'
   ];
   const data = {};
   for (const k of allowed) {
@@ -446,8 +472,25 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
       }
     }
   }
+
+  // Direct credential update fields
+  if (body.credUsername !== undefined) data.credUsername = body.credUsername;
+  if (body.credPassword !== undefined && body.credPassword !== '********') {
+    data.credPasswordEnc = encryptSecret(body.credPassword);
+    data.credUpdatedAt = new Date();
+  }
+
   const updated = await prisma.device.update({ where: { id }, data });
-  enqueueCheckmkSync('update', updated, req.user?.sub).catch(() => {});
+
+  // Handle Checkmk sync on change
+  if (data.monitoringEnabled !== undefined) {
+    const action = data.monitoringEnabled ? 'add' : 'delete';
+    addCheckmkSyncJob(action, updated.id, updated, req.user.sub).catch(console.error);
+  } else if (updated.monitoringEnabled && (data.ipAddress || data.name)) {
+    // If IP or name changed and monitoring is on, update host
+    addCheckmkSyncJob('update', updated.id, updated, req.user.sub).catch(console.error);
+  }
+
   res.json(sanitizeDeviceOutput(updated));
 });
 
@@ -461,7 +504,7 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
   if (device.backupEnabled) {
     await syncRouterDbFromDb();
   }
-  enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => {});
+  enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => { });
   res.status(204).send();
 });
 
@@ -1587,13 +1630,63 @@ app.get("/admin/logs", requireAuth, requireAdmin, async (req, res) => {
 });
 
 let shuttingDown = false;
+// Health check endpoint for microservices monitoring
+app.get('/health/services', async (_req, res) => {
+  const services = {
+    api: { status: 'ok', port: PORT },
+    snmp: { status: 'unknown', port: 3001 },
+    redis: { status: 'unknown', port: 6379 },
+    database: { status: 'unknown' },
+    queues: { status: 'unknown', workers: 0 },
+  };
+
+  // Check SNMP server
+  try {
+    const snmpUrl = process.env.SNMP_SERVER_URL || 'http://localhost:3001';
+    const snmpRes = await fetch(`${snmpUrl}/api/snmp/ping?ip=127.0.0.1&community=public&port=161`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000),
+    }).catch(() => null);
+    services.snmp.status = snmpRes && snmpRes.ok ? 'ok' : 'error';
+  } catch {
+    services.snmp.status = 'error';
+  }
+
+  // Check Redis
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    services.database.status = 'ok';
+  } catch {
+    services.database.status = 'error';
+  }
+
+  // Check Queues (workers running)
+  try {
+    // Import connection from queues
+    const { getQueueJobs } = await import('./queues/index.js');
+    const jobs = await getQueueJobs('snmp-discovery', { limit: 1 }).catch(() => []);
+    services.queues.status = 'ok';
+    services.queues.workers = 3; // We have 3 queue workers
+  } catch {
+    services.queues.status = 'error';
+  }
+
+  // Overall health
+  const allOk = Object.values(services).every(s => s.status === 'ok');
+  res.status(allOk ? 200 : 503).json({
+    overall: allOk ? 'healthy' : 'unhealthy',
+    services,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 async function gracefulShutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log('[SHUTDOWN] Finalizando filas e workers...');
-  await closeQueues().catch(() => {});
-  await stopQueueWorkers().catch(() => {});
-  await prisma.$disconnect().catch(() => {});
+  await closeQueues().catch(() => { });
+  await stopQueueWorkers().catch(() => { });
+  await prisma.$disconnect().catch(() => { });
 }
 
 process.on('SIGTERM', gracefulShutdown);

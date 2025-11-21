@@ -19,12 +19,24 @@ import AddDeviceDialog from "@/components/devices/AddDeviceDialog";
 import EditDeviceDialog from "@/components/devices/EditDeviceDialog";
 import type { Device } from "@/lib/utils";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+
 export default function Devices() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const { toast } = useToast();
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [deviceToDelete, setDeviceToDelete] = useState<string | null>(null);
   const [tenants, setTenants] = useState<Array<{ id: number; name: string }>>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
   const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(selectedTenantId);
@@ -63,9 +75,10 @@ export default function Devices() {
     }
   };
 
-  const handleDeleteDevice = async (deviceId: string) => {
+  const confirmDeleteDevice = async () => {
+    if (!deviceToDelete) return;
     try {
-      const success = deleteDevice(deviceId);
+      const success = await deleteDevice(deviceToDelete);
       if (success) {
         toast({ title: "Dispositivo removido", description: "Dispositivo removido com sucesso!" });
       } else {
@@ -73,6 +86,8 @@ export default function Devices() {
       }
     } catch {
       toast({ title: "Erro ao remover", description: "Não foi possível remover o dispositivo.", variant: "destructive" });
+    } finally {
+      setDeviceToDelete(null);
     }
   };
 
@@ -215,7 +230,7 @@ export default function Devices() {
                                 <DropdownMenuItem>Logs</DropdownMenuItem>
                                 <DropdownMenuItem
                                   className="text-destructive"
-                                  onClick={() => handleDeleteDevice(device.id)}
+                                  onClick={() => setDeviceToDelete(device.id)}
                                 >
                                   Remover
                                 </DropdownMenuItem>
@@ -239,7 +254,17 @@ export default function Devices() {
                             </div>
                             <div className="flex justify-between text-sm">
                               <span className="text-muted-foreground">SNMP</span>
-                              <span className="font-medium">{device.snmpVersion || "—"}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{device.snmpVersion || "—"}</span>
+                                {device.snmpStatus && (
+                                  <div
+                                    className={`h-2.5 w-2.5 rounded-full ${device.snmpStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
+                                      device.snmpStatus === 'error' ? 'bg-red-500' : 'bg-zinc-600'
+                                      }`}
+                                    title={`Status SNMP: ${device.snmpStatus}`}
+                                  />
+                                )}
+                              </div>
                             </div>
                             <div className="flex justify-between text-sm">
                               <span className="text-muted-foreground">Status</span>
@@ -277,6 +302,24 @@ export default function Devices() {
           }}
           device={selectedDevice}
         />
+
+        <AlertDialog open={!!deviceToDelete} onOpenChange={(open) => !open && setDeviceToDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Você tem certeza?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Esta ação não pode ser desfeita. Isso excluirá permanentemente o dispositivo
+                e removerá seus dados de nossos servidores.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmDeleteDevice} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                Remover
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </DashboardLayout>
   );

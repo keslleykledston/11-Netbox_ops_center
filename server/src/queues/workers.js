@@ -2,6 +2,7 @@ import { Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { processNetboxSync } from './processors/netbox-sync.js';
 import { processSnmpDiscovery } from './processors/snmp-discovery.js';
+import { processSnmpPolling } from './processors/snmp-polling.js';
 import { processCheckmkSync } from './processors/checkmk-sync.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
@@ -18,6 +19,7 @@ export function startQueueWorkers() {
   workers = [
     new Worker('netbox-sync', processNetboxSync, { connection }),
     new Worker('snmp-discovery', processSnmpDiscovery, { connection }),
+    new Worker('snmp-polling', processSnmpPolling, { connection }),
     new Worker('checkmk-sync', processCheckmkSync, { connection }),
   ];
   workers.forEach((worker) => {

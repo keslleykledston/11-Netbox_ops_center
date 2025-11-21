@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useDevices } from "@/hooks/use-mobile";
@@ -69,6 +70,9 @@ const deviceFormSchema = z.object({
       return port >= 1 && port <= 65535;
     }, { message: "Porta deve estar entre 1 e 65535" })
     .default("22"),
+  isActive: z.boolean().default(true),
+  backupEnabled: z.boolean().default(false),
+  monitoringEnabled: z.boolean().default(false),
 });
 
 type DeviceFormValues = z.infer<typeof deviceFormSchema>;
@@ -107,6 +111,9 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
       snmpVersion: "v2c",
       snmpPort: "161",
       sshPort: "22",
+      isActive: true,
+      backupEnabled: false,
+      monitoringEnabled: false,
     },
   });
 
@@ -121,7 +128,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
         deviceType: "router" as const,
         manufacturer: data.manufacturer,
         model: data.model,
-        status: "inactive" as const,
+        status: (data.isActive ? "active" : "inactive") as "active" | "inactive" | "maintenance",
         credentials: {
           username: data.login,
           password: data.password,
@@ -130,10 +137,12 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
         snmpCommunity: data.snmpCommunity,
         snmpPort: parseInt(data.snmpPort, 10),
         sshPort: parseInt(data.sshPort, 10),
+        backupEnabled: data.backupEnabled,
+        monitoringEnabled: data.monitoringEnabled,
       };
 
       const success = await createDevice(newDevice);
-      
+
       if (success) {
         toast.success("Dispositivo salvo com sucesso!", {
           description: `${data.name} foi adicionado ao banco de dados.`,
@@ -234,6 +243,70 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
                       <Input placeholder="Ex: NE40E, ASR9000" {...field} className="bg-zinc-800 text-white border-zinc-700 placeholder:text-zinc-400" />
                     </FormControl>
                     <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* Switches de Status e Funcionalidades */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 bg-zinc-800/50 rounded-lg border border-zinc-700">
+              <FormField
+                control={form.control}
+                name="isActive"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg p-2">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">Ativo</FormLabel>
+                      <FormDescription className="text-xs">
+                        Dispositivo operacional
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="backupEnabled"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg p-2">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">Backup</FormLabel>
+                      <FormDescription className="text-xs">
+                        Coleta automática
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name="monitoringEnabled"
+                render={({ field }) => (
+                  <FormItem className="flex flex-row items-center justify-between rounded-lg p-2">
+                    <div className="space-y-0.5">
+                      <FormLabel className="text-base">Monitorar</FormLabel>
+                      <FormDescription className="text-xs">
+                        Sync com Checkmk
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
                   </FormItem>
                 )}
               />

@@ -10,11 +10,11 @@ const connection = new Redis(REDIS_URL, {
   enableReadyCheck: false,
 });
 
-// Define queues
-export const netboxSyncQueue = new Queue('netbox-sync', { connection });
-export const snmpDiscoveryQueue = new Queue('snmp-discovery', { connection });
-export const sshSessionQueue = new Queue('ssh-session', { connection });
-export const checkmkSyncQueue = new Queue('checkmk-sync', { connection });
+connection.on('error', (err) => console.error('[REDIS] Connection error:', err));
+connection.on('connect', () => console.log('[REDIS] Connected to', REDIS_URL));
+connection.on('ready', () => console.log('[REDIS] Ready'));
+connection.on('close', () => console.warn('[REDIS] Connection closed'));
+connection.on('reconnecting', () => console.log('[REDIS] Reconnecting...'));
 
 // Job options defaults
 export const defaultJobOptions = {
@@ -33,8 +33,16 @@ export const defaultJobOptions = {
   },
 };
 
+// Define queues
+export const netboxSyncQueue = new Queue('netbox-sync', { connection });
+export const snmpDiscoveryQueue = new Queue('snmp-discovery', { connection });
+export const snmpPollingQueue = new Queue('snmp-polling', { connection });
+export const sshSessionQueue = new Queue('ssh-session', { connection });
+export const checkmkSyncQueue = new Queue('checkmk-sync', { connection });
+
 // Helper function to add jobs
 export async function addNetboxSyncJob(options, userId, tenantId) {
+  // ... (keep existing)
   const payload = {
     resources: options?.resources || ['tenants', 'devices'],
     url: options?.url || null,
@@ -63,7 +71,19 @@ export async function addSnmpDiscoveryJob(deviceId, discoveryType, userId, tenan
   });
 }
 
+export async function addSnmpPollingJob(deviceId) {
+  return await snmpPollingQueue.add('poll', {
+    deviceId,
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    attempts: 1, // Don't retry too much for polling
+    jobId: `snmp-poll-${deviceId}-${Date.now()}`,
+  });
+}
+
 export async function addCheckmkSyncJob(action, deviceId, deviceData, userId) {
+  // ... (keep existing)
   return await checkmkSyncQueue.add('sync', {
     action, // 'add', 'update', 'delete'
     deviceId,
@@ -85,6 +105,9 @@ export async function getJobStatus(queueName, jobId) {
       break;
     case 'snmp-discovery':
       queue = snmpDiscoveryQueue;
+      break;
+    case 'snmp-polling':
+      queue = snmpPollingQueue;
       break;
     case 'ssh-session':
       queue = sshSessionQueue;
@@ -124,6 +147,9 @@ export async function getQueueJobs(queueName, status = 'active', start = 0, end 
     case 'snmp-discovery':
       queue = snmpDiscoveryQueue;
       break;
+    case 'snmp-polling':
+      queue = snmpPollingQueue;
+      break;
     case 'ssh-session':
       queue = sshSessionQueue;
       break;
@@ -156,6 +182,7 @@ export async function closeQueues() {
   await Promise.all([
     netboxSyncQueue.close(),
     snmpDiscoveryQueue.close(),
+    snmpPollingQueue.close(),
     sshSessionQueue.close(),
     checkmkSyncQueue.close(),
     connection.quit(),

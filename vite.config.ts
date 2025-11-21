@@ -8,26 +8,26 @@ export default defineConfig(({ mode }) => {
   const SNMP_SERVER_URL = env.SNMP_SERVER_URL || "http://localhost:3001";
   const API_SERVER_URL = env.API_SERVER_URL || "http://localhost:4000";
   return ({
-  server: {
-    host: "::",
-    port: 8080,
-    proxy: {
-      "/api/snmp": {
-        target: SNMP_SERVER_URL,
-        changeOrigin: true,
-      },
-      "/api": {
-        target: API_SERVER_URL,
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
+    server: {
+      host: "0.0.0.0",
+      port: 8080,
+      proxy: {
+        "/api/snmp": {
+          target: SNMP_SERVER_URL,
+          changeOrigin: true,
+        },
+        "/api": {
+          target: API_SERVER_URL,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api/, ""),
+        },
       },
     },
-  },
-  plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+    plugins: [react(), mode === "development" && componentTagger()].filter(Boolean),
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
     },
-  },
   });
 });

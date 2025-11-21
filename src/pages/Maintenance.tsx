@@ -5,9 +5,11 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { LogViewer } from "@/components/LogViewer";
-import { FileText } from "lucide-react";
+import { useServiceHealth } from "@/hooks/use-service-health";
+import { Activity, Database, Server, Network, Layers } from "lucide-react";
 
 const Maintenance = () => {
+  const { health } = useServiceHealth();
   const [summary, setSummary] = useState<{ devices: number; interfaces: number; peers: number; applications: number; tenants: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [confirm, setConfirm] = useState("");
@@ -36,7 +38,7 @@ const Maintenance = () => {
       const reg = await api.listAsnRegistry();
       setAsnList((reg as any[]).map((r) => ({ id: r.id, asn: r.asn, name: r.name })));
       setAsnEdit({});
-    } catch {}
+    } catch { }
   };
   useEffect(() => { load(); }, []);
 
@@ -169,6 +171,71 @@ const Maintenance = () => {
         </div>
 
         <LogViewer open={logViewerOpen} onOpenChange={setLogViewerOpen} />
+
+        {/* Service Health Dashboard */}
+        {health && (
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <Card className="bg-card/50">
+              <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Server className="h-4 w-4" /> API
+                </div>
+                <div className={`text-lg font-bold ${health.services.api.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services.api.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-xs text-muted-foreground">Porta {health.services.api.port}</div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card/50">
+              <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Network className="h-4 w-4" /> SNMP
+                </div>
+                <div className={`text-lg font-bold ${health.services.snmp.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services.snmp.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-xs text-muted-foreground">Porta {health.services.snmp.port}</div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card/50">
+              <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Database className="h-4 w-4" /> Redis
+                </div>
+                <div className={`text-lg font-bold ${health.services.redis.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services.redis.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-xs text-muted-foreground">Porta {health.services.redis.port}</div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card/50">
+              <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Database className="h-4 w-4" /> Database
+                </div>
+                <div className={`text-lg font-bold ${health.services.database.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services.database.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-xs text-muted-foreground">Prisma</div>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-card/50">
+              <CardContent className="p-4 flex flex-col items-center justify-center gap-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                  <Layers className="h-4 w-4" /> Queues
+                </div>
+                <div className={`text-lg font-bold ${health.services.queues.status === 'ok' ? 'text-green-500' : 'text-red-500'}`}>
+                  {health.services.queues.status === 'ok' ? 'ONLINE' : 'OFFLINE'}
+                </div>
+                <div className="text-xs text-muted-foreground">{health.services.queues.workers} Workers</div>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <Card>

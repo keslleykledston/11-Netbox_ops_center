@@ -128,19 +128,9 @@ export function useDevices(tenantId?: string) {
     try {
       if (API_MODE) {
         const created = await api.createDevice({
+          ...device,
           tenantId: device.tenantId,
-          name: device.name,
-          hostname: device.hostname,
-          ipAddress: device.ipAddress,
-          deviceType: device.deviceType,
-          manufacturer: device.manufacturer,
-          model: device.model,
-          status: device.status,
-        snmpVersion: device.snmpVersion,
-        snmpCommunity: device.snmpCommunity,
-        snmpPort: device.snmpPort,
-        sshPort: device.sshPort,
-      });
+        });
         await refreshDevices();
         return created as unknown as Device;
       }

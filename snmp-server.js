@@ -250,7 +250,7 @@ app.get('/api/snmp/interfaces', async (req, res) => {
   } finally {
     try {
       session.close();
-    } catch {}
+    } catch { }
   }
 });
 
@@ -284,7 +284,7 @@ app.get('/api/snmp/bgp-peers', async (req, res) => {
         'SNMP local AS timeout'
       );
       localAsn = Number(vb?.value || 0);
-    } catch {}
+    } catch { }
 
     let table = await withTimeout(
       tableColumns(session, '1.3.6.1.2.1.15.3.1', [7, 9]).then((t) => {
@@ -300,7 +300,7 @@ app.get('/api/snmp/bgp-peers', async (req, res) => {
     try {
       const descRows = await subtree(session, '1.3.6.1.2.1.15.3.1.18');
       descRows.forEach((vb) => { descMap[oidLastIndex(vb.oid)] = String(vb.value); });
-    } catch {}
+    } catch { }
 
     let peers = Object.keys(table).map((idx) => {
       const row = table[idx] || {};
@@ -353,7 +353,7 @@ app.get('/api/snmp/bgp-peers', async (req, res) => {
   } finally {
     try {
       session.close();
-    } catch {}
+    } catch { }
   }
 });
 
@@ -387,7 +387,7 @@ app.get('/api/snmp/ping', async (req, res) => {
   } finally {
     try {
       session.close();
-    } catch {}
+    } catch { }
   }
 });
 

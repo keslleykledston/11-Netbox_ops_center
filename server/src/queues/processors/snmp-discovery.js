@@ -12,7 +12,7 @@ export async function processSnmpDiscovery(job) {
     // Get device
     await job.updateProgress(10);
     const device = await prisma.device.findUnique({
-      where: { id: deviceId },
+      where: { id: Number(deviceId) }, // Convert to number for Prisma
     });
 
     if (!device) {
@@ -23,16 +23,17 @@ export async function processSnmpDiscovery(job) {
     await job.updateProgress(20);
 
     // Perform SNMP discovery
-    const endpoint = discoveryType === 'interfaces' ? '/snmp/interfaces' : '/snmp/bgp-peers';
-    const response = await fetch(`${SNMP_SERVER_URL}${endpoint}`, {
-      method: 'POST',
+    // Perform SNMP discovery
+    const endpoint = discoveryType === 'interfaces' ? '/api/snmp/interfaces' : '/api/snmp/bgp-peers';
+    const params = new URLSearchParams({
+      ip: device.ipAddress,
+      community: device.snmpCommunity,
+      port: String(device.snmpPort || 161),
+    });
+
+    const response = await fetch(`${SNMP_SERVER_URL}${endpoint}?${params.toString()}`, {
+      method: 'GET',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        ipAddress: device.ipAddress,
-        snmpVersion: device.snmpVersion || 'v2c',
-        snmpCommunity: device.snmpCommunity,
-        snmpPort: device.snmpPort || 161,
-      }),
     });
 
     if (!response.ok) {
@@ -53,7 +54,7 @@ export async function processSnmpDiscovery(job) {
     if (discoveryType === 'interfaces') {
       // Delete old interfaces for this device
       await prisma.discoveredInterface.deleteMany({
-        where: { deviceId },
+        where: { deviceId: Number(deviceId) },
       });
 
       // Insert new interfaces
@@ -63,22 +64,22 @@ export async function processSnmpDiscovery(job) {
             tenantId: device.tenantId,
             deviceId: device.id,
             deviceName: device.name,
-            ifIndex: String(iface.ifIndex),
-            ifName: iface.ifName,
-            ifDesc: iface.ifDesc,
-            ifType: iface.ifType,
+            ifIndex: String(iface.index || iface.ifIndex),
+            ifName: iface.name || iface.ifName,
+            ifDesc: iface.desc || iface.ifDesc,
+            ifType: iface.type || iface.ifType,
           })),
         });
       }
     } else {
       // Delete old peers for this device
       await prisma.discoveredBgpPeer.deleteMany({
-        where: { deviceId },
+        where: { deviceId: Number(deviceId) },
       });
 
       // Insert new peers
       if (payload.localAsn) {
-        await prisma.device.update({ where: { id: device.id }, data: { localAsn: Number(payload.localAsn) } }).catch(() => {});
+        await prisma.device.update({ where: { id: device.id }, data: { localAsn: Number(payload.localAsn) } }).catch(() => { });
       }
       if (discovered.length > 0) {
         await prisma.discoveredBgpPeer.createMany({
@@ -86,7 +87,7 @@ export async function processSnmpDiscovery(job) {
             tenantId: device.tenantId,
             deviceId: device.id,
             deviceName: device.name,
-            ipPeer: peer.ipPeer,
+            ipPeer: peer.ip || peer.ipPeer,
             asn: peer.asn,
             localAsn: peer.localAsn || device.localAsn,
             name: peer.name,

@@ -58,7 +58,11 @@ model Device {
   credUsername  String?
   credPasswordEnc String?
   credUpdatedAt DateTime?
+
   backupEnabled Boolean  @default(false)
+  monitoringEnabled Boolean @default(false)
+  snmpStatus    String?  // "ok", "error", "unknown"
+  lastSnmpOk    DateTime?
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
   sshSessions  SshSession[]

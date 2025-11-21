@@ -14,7 +14,17 @@ export async function processCheckmkSync(job) {
         result = await addHostToCheckmk(deviceData);
         break;
       case 'update':
-        result = await updateHostInCheckmk(deviceId, deviceData);
+        try {
+          result = await updateHostInCheckmk(deviceId, deviceData);
+        } catch (error) {
+          // If host doesn't exist (404), try to add it
+          if (error.message && error.message.includes('404')) {
+            await job.log('Host not found, creating instead...');
+            result = await addHostToCheckmk(deviceData);
+          } else {
+            throw error;
+          }
+        }
         break;
       case 'delete':
         result = await deleteHostFromCheckmk(deviceData?.name || deviceId);

@@ -21,6 +21,23 @@ Todas as mudanças notáveis deste projeto serão documentadas aqui.
 ### Correções
 - Sanitização unificada das respostas de dispositivos (`credUsername`/`hasCredPassword`) e sincronização automática do router.db após exclusão.
 
+## [v0.1.1] - 2025-11-21
+
+### Correções
+- **SNMP Discovery**: Corrigido bug crítico onde interfaces e peers eram salvos com valores `undefined` devido a incompatibilidade de nomes de propriedades entre o servidor SNMP e o processador de filas.
+- **Checkmk Integration**: Ajustada configuração de hosts para dispositivos de rede, forçando `tag_agent: 'no-agent'` e configurando credenciais SNMP (Community/Version) corretamente para evitar falhas de conexão do agente.
+- **Login**: Resetada senha do usuário de suporte e validado fluxo de autenticação.
+- **Filas**: Implementado script de limpeza automática para jobs falhados no Redis.
+
+### Novidades
+- **Service Monitoring**: Novo dashboard na aba **Manutenção** exibindo status em tempo real de:
+  - API Server
+  - SNMP Gateway
+  - Redis
+  - Database (Prisma)
+  - Queue Workers
+- **Health Check**: Endpoint `/health/services` para monitoramento centralizado da saúde dos microserviços.
+- **Scripts Utilitários**: Adicionados scripts para diagnóstico e manutenção (`check_checkmk.js`, `update_checkmk.js`, `test_snmp_discovery.js`, `clear_failed_jobs.js`).
 
 ## [v0.1.0] - 2025-11-14
 

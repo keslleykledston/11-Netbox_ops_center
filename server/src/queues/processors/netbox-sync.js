@@ -1,11 +1,11 @@
-// Netbox Sync Job Processor
 import { syncFromNetbox } from '../../netbox.js';
 import { PrismaClient } from '@prisma/client';
+import { syncRouterDb } from '../../modules/monitor/oxidized-service.js';
 
 const prisma = new PrismaClient();
 
 export async function processNetboxSync(job) {
-  const { resources, url, token, deviceFilters, tenantId } = job.data;
+  const { resources, url, token, deviceFilters, tenantId, defaultCredentials } = job.data;
 
   try {
     // Update progress
@@ -18,11 +18,41 @@ export async function processNetboxSync(job) {
       token,
       tenantScopeId: tenantId || null,
       deviceFilters,
+      defaultCredentials,
       onProgress: async (progress, message) => {
         await job.updateProgress(progress);
         await job.log(message);
       },
     });
+
+    // Trigger Oxidized Sync for devices with backupEnabled
+    if (result.devices > 0) {
+      await job.log('Syncing Oxidized router.db...');
+      const devices = await prisma.device.findMany({
+        where: { backupEnabled: true },
+        select: {
+          id: true,
+          name: true,
+          ipAddress: true,
+          model: true,
+          manufacturer: true,
+          credUsername: true,
+          credPasswordEnc: true,
+          sshPort: true,
+          backupEnabled: true,
+        },
+      });
+      try {
+        const oxResult = await syncRouterDb(devices);
+        if (oxResult.success) {
+          await job.log(`Oxidized sync success: ${devices.length} devices`);
+        } else {
+          await job.log(`Oxidized sync failed: ${oxResult.message}`);
+        }
+      } catch (oxErr) {
+        await job.log(`Oxidized sync error: ${oxErr.message || oxErr}`);
+      }
+    }
 
     await job.updateProgress(100);
 

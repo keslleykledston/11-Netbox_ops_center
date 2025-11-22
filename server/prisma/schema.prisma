@@ -46,10 +46,15 @@ model Device {
   ipAddress     String
   deviceType    String   @default("router")
   manufacturer  String
+  platform      String? // NetBox platform slug (e.g. routeros, ios)
   model         String
   osVersion     String?
   status        String   @default("inactive")
   location      String?
+  site          String?
+  role          String?
+  serial        String?
+  assetTag      String?
   description   String?
   snmpVersion   String?
   snmpCommunity String?
@@ -58,6 +63,10 @@ model Device {
   credUsername  String?
   credPasswordEnc String?
   credUpdatedAt DateTime?
+
+  isProduction  Boolean  @default(false)
+  jumpserverId  String?
+  customData    String?  // JSON string for extra metadata
 
   backupEnabled Boolean  @default(false)
   monitoringEnabled Boolean @default(false)
@@ -108,7 +117,7 @@ model DiscoveredInterface {
   tenantId     Int
   tenant       Tenant   @relation(fields: [tenantId], references: [id])
   deviceId     Int
-  device       Device   @relation(fields: [deviceId], references: [id])
+  device       Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   deviceName   String
   ifIndex      String
   ifName       String
@@ -125,7 +134,7 @@ model DiscoveredBgpPeer {
   tenantId     Int
   tenant       Tenant   @relation(fields: [tenantId], references: [id])
   deviceId     Int
-  device       Device   @relation(fields: [deviceId], references: [id])
+  device       Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   deviceName   String
   ipPeer       String
   asn          Int
@@ -146,7 +155,7 @@ model SshSession {
   tenantId   Int?
   tenant     Tenant?   @relation(fields: [tenantId], references: [id])
   deviceId   Int
-  device     Device    @relation(fields: [deviceId], references: [id])
+  device     Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   deviceName String
   deviceIp   String
   status     String    @default("pending")

@@ -14,6 +14,11 @@ import { addNetboxSyncJob, addSnmpDiscoveryJob, addSnmpPollingJob, addCheckmkSyn
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const prisma = new PrismaClient();
 const app = express();
@@ -712,6 +717,44 @@ app.get('/backup/devices/:id/versions', requireAuth, async (req, res) => {
   }
 });
 
+// Oxidized HTTP Source Endpoint
+app.get('/oxidized/nodes', async (req, res) => {
+  try {
+    const devices = await prisma.device.findMany({
+      where: { backupEnabled: true },
+      select: {
+        name: true,
+        ipAddress: true,
+        platform: true,
+        model: true,
+        manufacturer: true,
+        credUsername: true,
+        credPasswordEnc: true,
+        sshPort: true,
+        tenant: { select: { name: true, tenantGroup: true } }
+      }
+    });
+
+    const nodes = devices.map(d => {
+      const group = d.tenant?.tenantGroup || d.tenant?.name || 'default';
+      return {
+        name: d.name,
+        ip: d.ipAddress,
+        model: d.platform || 'routeros', // Use platform (driver) or default to routeros
+        group: group,
+        username: d.credUsername,
+        password: d.credPasswordEnc ? decryptSecret(d.credPasswordEnc) : null,
+        ssh_port: d.sshPort || 22
+      };
+    });
+
+    res.json(nodes);
+  } catch (e) {
+    console.error('[OXIDIZED][ERROR] Failed to serve nodes:', e);
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // Applications
 app.get("/applications", requireAuth, async (req, res) => {
   const where = req.user.tenantId ? { tenantId: req.user.tenantId } : {};
@@ -724,19 +767,34 @@ app.post("/applications", requireAuth, async (req, res) => {
     req.user.tenantId ||
     (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
 
-  const { name, url, apiKey, status = "disconnected", description = null, config = null } = req.body || {};
+  const { name, url, apiKey, status = "disconnected", description = null, config = null, username, password, privateKey } = req.body || {};
   if (!name || !url || !apiKey) return res.status(400).json({ error: "name, url, apiKey required" });
 
-  // Validate config if provided
-  let configStr = null;
+  // Handle Private Key
+  if (privateKey) {
+    try {
+      const keyPath = path.join(__dirname, 'netbox_private_key.pem');
+      await fs.writeFile(keyPath, privateKey, 'utf8');
+      // Set permissions to 600
+      await fs.chmod(keyPath, 0o600);
+    } catch (e) {
+      console.error("Failed to save private key:", e);
+    }
+  }
+
+  // Prepare config with credentials
+  let configObj = {};
   if (config) {
     try {
-      configStr = typeof config === 'string' ? config : JSON.stringify(config);
-      JSON.parse(configStr); // Validate JSON
+      configObj = typeof config === 'string' ? JSON.parse(config) : config;
     } catch {
       return res.status(400).json({ error: "config must be valid JSON" });
     }
   }
+  if (username) configObj.username = username;
+  if (password) configObj.password = password;
+
+  const configStr = JSON.stringify(configObj);
 
   const created = await prisma.application.create({
     data: { tenantId, name, url, apiKey, status, description, config: configStr },
@@ -756,18 +814,43 @@ app.patch("/applications/:id", requireAuth, async (req, res) => {
 
   // Allow updating specific fields
   const allowed = ['name', 'url', 'apiKey', 'status', 'description', 'config'];
+
+  // Handle Private Key separately
+  if (body.privateKey) {
+    try {
+      const keyPath = path.join(__dirname, 'netbox_private_key.pem');
+      await fs.writeFile(keyPath, body.privateKey, 'utf8');
+      await fs.chmod(keyPath, 0o600);
+    } catch (e) {
+      console.error("Failed to save private key:", e);
+    }
+  }
+
+  // Handle Credentials in Config
+  if (body.username !== undefined || body.password !== undefined) {
+    let currentConfig = {};
+    try {
+      if (appRow.config) currentConfig = JSON.parse(appRow.config);
+    } catch { }
+
+    if (body.username !== undefined) currentConfig.username = body.username;
+    if (body.password !== undefined) currentConfig.password = body.password;
+
+    data.config = JSON.stringify(currentConfig);
+  }
+
   for (const k of allowed) {
     if (body[k] !== undefined) {
       if (k === 'config' && body[k] !== null) {
-        // Validate config JSON
+        // Validate config JSON if explicitly passed
         try {
-          const configStr = typeof body[k] === 'string' ? body[k] : JSON.stringify(body[k]);
-          JSON.parse(configStr);
-          data[k] = configStr;
+          const c = typeof body[k] === 'string' ? body[k] : JSON.stringify(body[k]);
+          JSON.parse(c);
+          data.config = c;
         } catch {
           return res.status(400).json({ error: "config must be valid JSON" });
         }
-      } else {
+      } else if (k !== 'config') { // Skip config here as we handled it or will handle it via merge
         data[k] = body[k];
       }
     }
@@ -1116,12 +1199,34 @@ app.get('/backup/diff', requireAuth, async (req, res) => {
 app.post("/netbox/sync", requireAuth, async (req, res) => {
   try {
     const { resources, url: urlOverride, token: tokenOverride, deviceFilters } = req.body || {};
+
+    // Fetch Application config to get default credentials
+    // We assume the URL matches the one in the DB, or we find the first NetBox app
+    let defaultCredentials = {};
+    const app = await prisma.application.findFirst({
+      where: {
+        OR: [
+          { url: urlOverride },
+          { name: { contains: 'NetBox' } }
+        ]
+      }
+    });
+
+    if (app && app.config) {
+      try {
+        const conf = JSON.parse(app.config);
+        defaultCredentials = { username: conf.username, password: conf.password };
+      } catch { }
+    }
+
     const job = await addNetboxSyncJob({
       resources: resources && resources.length ? resources : ['tenants', 'devices'],
       url: urlOverride || process.env.NETBOX_URL,
       token: tokenOverride || process.env.NETBOX_TOKEN,
       deviceFilters: deviceFilters || null,
+      defaultCredentials,
     }, req.user?.sub || null, req.user?.tenantId || null);
+
     res.json({
       jobId: job.id,
       queue: 'netbox-sync',
@@ -1287,15 +1392,15 @@ app.post("/admin/purge", requireAuth, async (req, res) => {
     }
 
     let whereTenant = {};
-    if (!global && req.user.tenantId) {
+    if (req.user.tenantId) {
       whereTenant = { tenantId: req.user.tenantId };
+    } else if (req.user.role === 'admin') {
+      // Admin sem tenant: assume global por padrão (alinha com a visualização)
+      whereTenant = {};
     } else {
-      if (global) {
-        whereTenant = {};
-      } else {
-        const def = await prisma.tenant.findUnique({ where: { name: "default" } });
-        whereTenant = def ? { tenantId: def.id } : { tenantId: -1 };
-      }
+      // Usuário comum sem tenant (não deveria acontecer, mas fallback para default)
+      const def = await prisma.tenant.findUnique({ where: { name: "default" } });
+      whereTenant = def ? { tenantId: def.id } : { tenantId: -1 };
     }
     const result = { deletedDevices: 0, deletedInterfaces: 0, deletedPeers: 0, deletedApplications: 0, deletedTenants: 0 };
 

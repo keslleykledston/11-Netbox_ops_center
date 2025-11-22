@@ -1,18 +1,45 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
+server*.log
 
-node_modules
-dist
-dist-ssr
-*.local
+# Environment & Secrets
+.env
+server/.env
+*.pem
+*.key
+netbox_private_key*
 
-# Editor directories and files
+# Database
+server/prisma/dev.db*
+server/dev.db*
+*.db
+*.db-shm
+*.db-wal
+
+# SSH Sessions & Runtime
+ssh-sessions/
+backups/
+write-permission-check.txt
+
+# Debug/Test Scripts (kept locally, not in repo)
+server/debug/
+
+# Editor directories
 .vscode/*
 !.vscode/extensions.json
 .idea
@@ -23,19 +50,18 @@ dist-ssr
 *.sln
 *.sw?
 
-# lixo antigo de repositório
-Scripts_e_Automacoes/dev/.git_backup/
-
-# lixo antigo de repositório
-Scripts_e_Automacoes/dev/.git_backup/
-node_modules/
-dist/
-.vscode/
-.DS_Store
-Scripts_e_Automacoes/dev/.git_backup/
-
-# Env & DB (do not commit secrets)
-.env
-server/.env
-server/prisma/dev.db
+# Python
 venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temporary files
+*.tmp
+*.bak
+/tmp/
+update.log

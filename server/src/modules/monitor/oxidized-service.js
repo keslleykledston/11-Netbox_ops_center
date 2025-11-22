@@ -48,17 +48,19 @@ function buildRouterEntry(device) {
     return `${name}:${ip}:${model}:${input}:${login}:${pass}:${sshPort}`;
 }
 
-async function ensureOxidizedConfig() {
+export async function ensureOxidizedConfig(force = false) {
     try {
         // Check if config exists
-        try {
-            await fs.access(CONFIG_PATH);
-            return; // Exists, nothing to do
-        } catch {
-            // Doesn't exist, proceed to create
+        if (!force) {
+            try {
+                await fs.access(CONFIG_PATH);
+                return; // Exists, nothing to do
+            } catch {
+                // Doesn't exist, proceed to create
+            }
         }
 
-        console.log('[OXIDIZED] Config missing, generating default config...');
+        console.log(`[OXIDIZED] ${force ? 'Regenerating' : 'Generating'} config...`);
         await fs.mkdir(CONFIG_DIR, { recursive: true });
         await fs.mkdir(path.join(CONFIG_DIR, 'git-repos'), { recursive: true });
 
@@ -96,20 +98,36 @@ output:
   file:
     directory: "/home/oxidized/.config/oxidized/configs"
 source:
-  default: csv
-  csv:
-    file: "/home/oxidized/.config/oxidized/router.db"
-    delimiter: ":"
+  default: http
+  http:
+    url: http://netbox-ops-center-app:4000/oxidized/nodes
     map:
-      name: 0
-      ip: 1
-      model: 2
-      input: 3
-      username: 4
-      password: 5
+      name: name
+      ip: ip
+      model: model
+      group: group
+      username: username
+      password: password
     vars_map:
-      ssh_port: 6
+      ssh_port: ssh_port
     gpg: false
+  netbox:
+    url: "${process.env.NETBOX_URL || 'http://netbox:8000'}"
+    token: "${process.env.NETBOX_TOKEN || ''}"
+    filter:
+      status: active
+      cf_backup: true
+      has_primary_ip: true
+      name: !ruby/regexp /^(?!4WNET-BVA-BRT-RX|INFORR-BVB-JCL-RX)/
+    map:
+      name: name
+      ip: primary_ip.address
+      model: platform.slug
+      group: site.slug
+    vars_map:
+      ssh_port: cf_ssh_port
+      username: cf_username
+      password: cf_password
 model_map:
   cisco: ios
   juniper: junos
@@ -129,14 +147,20 @@ async function ensureRouterFile() {
         return data;
     } catch (err) {
         if (err?.code === 'ENOENT') {
-            await fs.mkdir(path.dirname(ROUTER_DB_PATH), { recursive: true });
-            const initial = `${MANAGED_BEGIN}\n${MANAGED_END}\n`;
-            await fs.writeFile(ROUTER_DB_PATH, initial, 'utf8');
+            try {
+                await fs.mkdir(path.dirname(ROUTER_DB_PATH), { recursive: true });
+                const initial = `${MANAGED_BEGIN}\n${MANAGED_END}\n`;
+                await fs.writeFile(ROUTER_DB_PATH, initial, 'utf8');
 
-            // Also ensure config exists whenever we are touching the directory
-            await ensureOxidizedConfig();
+                // Also ensure config exists whenever we are touching the directory
+                await ensureOxidizedConfig();
 
-            return initial;
+                return initial;
+            } catch (mkdirErr) {
+                lastRouterError = mkdirErr?.message || String(mkdirErr);
+                console.warn('[OXIDIZED] Falha ao criar router.db:', lastRouterError);
+                return null;
+            }
         }
         lastRouterError = err?.message || String(err);
         console.warn('[OXIDIZED] Falha ao ler router.db:', lastRouterError);
@@ -163,8 +187,8 @@ export async function syncRouterDb(devices) {
     const file = await ensureRouterFile();
     if (!file) return { success: false, message: lastRouterError || 'router.db indisponível' };
 
-    // Ensure config exists too
-    await ensureOxidizedConfig();
+    // Ensure config exists (force regenerate to apply latest settings)
+    await ensureOxidizedConfig(true);
 
     const managedLines = devices
         .map((device) => buildRouterEntry(device))

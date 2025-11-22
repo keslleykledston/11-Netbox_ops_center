@@ -1,129 +1,198 @@
 # NetBox Ops Center
 
-Uma plataforma completa de gestão de rede, integrando NetBox, monitoramento SNMP, backups com Oxidized e gestão de containers com Portainer.
+Uma plataforma completa de gestão de rede, integrando **NetBox**, monitoramento SNMP, backups automáticos com **Oxidized**, acesso SSH e gestão de containers com Portainer.
 
-## 🚀 Guia de Instalação Completo
+## ✨ Funcionalidades
 
-Siga estes passos para baixar, instalar e testar a aplicação.
+- 🔗 **Integração NetBox**: Sincronização automática de dispositivos, tenants, sites e credenciais
+- 📦 **Backup Automático**: Oxidized integrado com suporte a múltiplos vendors (Huawei VRP, MikroTik, Cisco, etc.)
+- 🔐 **Gestão de Credenciais**: Suporte a NetBox Secrets Plugin + fallback configurável
+- 🖥️ **Acesso SSH**: Sessões SSH diretas via browser (integração opcional com Jumpserver)
+- 📊 **Descoberta SNMP**: Interfaces e peers BGP
+- 🎯 **Multi-tenant**: Isolamento de dados por tenant
+- 🔍 **Diff de Configurações**: Comparação visual entre versões de backup
+- ⚙️ **API REST**: Backend Node.js + Express
+
+## 🚀 Instalação Rápida
 
 ### Pré-requisitos
-- Um servidor Linux (Ubuntu/Debian recomendado)
-- Acesso à internet
-- Usuário com permissão `sudo` (root)
-- Git instalado (`sudo apt install git` se não tiver)
+- Linux (Ubuntu/Debian recomendado)
+- Docker + Docker Compose
+- Git
 
-### Passo 1: Download do Projeto
-Baixe o código fonte do repositório para o seu servidor:
+### Método 1: Instalação Local
 
 ```bash
-# 1. Clone o repositório
+# Clone o repositório
 git clone https://github.com/keslleykledston/11-Netbox_ops_center.git
-
-# 2. Entre na pasta do projeto
 cd 11-Netbox_ops_center
+
+# Execute o instalador
+sudo ./install.sh
 ```
 
-### Passo 2: Instalação
+O script irá:
+- Instalar Docker e Docker Compose (se necessário)
+- Configurar variáveis de ambiente
+- Instalar dependências Node.js
+- Subir todos os containers
+- Configurar proxy reverso Nginx
 
-#### Opção A: Instalação Local (Nesta máquina)
-Se você já está no servidor onde o sistema vai rodar:
+### Método 2: Deploy Remoto
 
-1.  **Execute o instalador**:
-    ```bash
-    sudo ./install.sh
-    ```
-2.  **Siga as instruções na tela**. O script:
-    - instala Docker e Docker Compose (se necessário);
-    - configura os arquivos `.env`;
-    - roda `npm install` no frontend e `npm --prefix server install && npm --prefix server run prisma:generate` automaticamente;
-    - sobe toda a stack com `docker compose up -d`.
+```bash
+# Sintaxe: ./deploy_remote.sh [IP] [USUARIO] [SENHA]
+./deploy_remote.sh 192.168.1.100 admin mypassword
+```
 
-#### Opção B: Instalação Remota (De outro computador)
-Se você quer instalar em um servidor remoto a partir do seu computador atual:
+## 🔧 Configuração Inicial
 
-1.  **Execute o script de deploy**:
-    ```bash
-    # Sintaxe: ./deploy_remote.sh [IP_DO_SERVIDOR] [USUARIO] [SENHA]
-    ./deploy_remote.sh 10.211.55.37 suporte suportekggg
-    ```
+### 1. Primeiro Acesso
 
-### Passo 3: Validação e Testes
+Acesse `http://SEU_IP/` e crie o usuário administrador.
 
-Após a instalação, verifique se tudo está funcionando:
+### 2. Configurar NetBox
 
-1.  **Verifique os Containers**:
-    No servidor, execute:
-    ```bash
-    docker compose ps
-    ```
-    Você deve ver 4 serviços com status "Up": `proxy`, `app`, `portainer`, `oxidized`.
+1. Vá em **Aplicações** > **Adicionar Aplicação**
+2. Preencha:
+   - **Nome**: `NetBox`
+   - **URL**: `https://seu-netbox.com`
+   - **API Key**: Seu token do NetBox
+   - **Login (Opcional)**: Usuário SSH padrão
+   - **Senha (Opcional)**: Senha SSH padrão
+   - **Chave Privada RSA**: Para NetBox Secrets Plugin (opcional)
 
-2.  **Acesse pelo Navegador**:
-    Abra os seguintes endereços (troque `localhost` pelo IP do servidor se necessário):
+3. Clique em **Sincronizar NetBox**
 
-    | Serviço | Endereço | O que verificar |
-    | :--- | :--- | :--- |
-    | **Painel Principal** | `http://localhost/` | A tela de login deve aparecer. |
-    | **Portainer** | `http://localhost/portainer/` | Deve pedir para criar senha de admin. |
-    | **Oxidized** | `http://localhost/oxidized/` | Deve mostrar a interface do Oxidized. |
+### 3. Configurar Oxidized (Opcional)
 
----
+Se já tiver uma instância Oxidized externa:
 
-## 🔄 Manutenção e Atualizações
+1. Vá em **Aplicações** > **Adicionar Aplicação**
+2. Nome: `Oxidized`
+3. Configure URL e intervalo de coleta
 
-Para atualizar o sistema em produção para a versão mais recente do código:
+## 📋 Serviços Disponíveis
 
-1.  **Acesse o servidor** via SSH.
-2.  **Navegue até a pasta do projeto**:
-    ```bash
-    cd 11-Netbox_ops_center
-    ```
-3.  **Execute o script de atualização**:
-    ```bash
-    ./update.sh
-    ```
+| Serviço | Porta/URL | Descrição |
+|---------|-----------|-----------|
+| **App Principal** | `http://IP/` | Interface web principal |
+| **Portainer** | `http://IP/portainer/` | Gestão de containers |
+| **Oxidized** | `http://IP/oxidized/` | Interface do Oxidized |
+| **API Backend** | `http://IP/api/` | API REST |
 
-O script irá automaticamente:
-- Verificar se há novas versões no GitHub.
-- Baixar o código atualizado (`git pull`).
-- Atualizar as imagens Docker (`docker compose pull`).
-- Reconstruir e reiniciar os containers necessários (`docker compose up -d --build`).
+## 🔄 Atualização
 
----
+```bash
+cd 11-Netbox_ops_center
+./update.sh
+```
+
+O script verifica a versão no GitHub e atualiza automaticamente.
 
 ## 🛠️ Solução de Problemas
 
-- **Comando git não encontrado?**
-    - Instale o git: `sudo apt update && sudo apt install git -y`
+### Erro: "0 devices imported" na sincronização
 
-- **Nada funciona?**
-    - Verifique os logs de instalação: `cat install_log.txt`
-    - Verifique os logs dos containers: `docker compose logs -f`
-- **Frontend responde 500 para todas as rotas `/api`?**
-    - Certifique-se de que o backend está com as dependências instaladas:
-      ```bash
-      npm install
-      npm --prefix server install
-      npm --prefix server run prisma:generate
-      ```
-    - Reinicie os containers com `docker compose up -d --build`.
+1. Verifique filtros de Tenant Group (padrão: "K3G Solutions")
+2. Certifique-se que os dispositivos têm IPs primários configurados
+3. Veja variável `NETBOX_TENANT_GROUP_FILTER` no `.env`
 
----
+### Credenciais não aparecem nos dispositivos
 
-## ⚙️ Área Técnica (Desenvolvedores)
+1. Verifique se preencheu **Login/Senha** na configuração do NetBox (aba Aplicações)
+2. Se usar NetBox Secrets: cole a chave RSA privada correta
+3. As credenciais usam fallback: Secrets → Custom Fields → **Config da App**
+
+### Banco de dados corrompido
+
+```bash
+# Pare o container
+docker stop netbox-ops-center-app
+
+# Delete o banco
+docker exec netbox-ops-center-app rm -f /app/server/prisma/dev.db*
+
+# Reinicie
+docker start netbox-ops-center-app
+```
+
+Depois, recadastre o usuário admin e a aplicação NetBox.
+
+### Logs para Debug
+
+```bash
+# Logs do backend
+docker logs netbox-ops-center-app -f
+
+# Logs do Oxidized
+docker logs netbox-ops-center-oxidized -f
+```
+
+## 🗂️ Estrutura do Projeto
+
+```
+├── server/              # Backend Node.js
+│   ├── src/            # Código fonte
+│   │   ├── index.js    # API principal
+│   │   ├── netbox.js   # Integração NetBox
+│   │   └── queues/     # Jobs assíncronos (BullMQ)
+│   ├── prisma/         # Schema do banco SQLite
+│   └── debug/          # Scripts de debug (não incluídos no Git)
+├── src/                # Frontend React + Vite
+├── docker/             # Dockerfiles
+├── install.sh          # Instalador local
+├── deploy_remote.sh    # Deploy remoto
+└── update.sh           # Script de atualização
+```
+
+## 🔐 Segurança
+
+- ⚠️ **Nunca commite** arquivos `.env`, chaves privadas ou `dev.db`
+- 🔒 Credenciais são criptografadas no banco (AES-256-GCM)
+- 🛡️ JWT para autenticação da API
+- 📝 Logs de auditoria para ações críticas
+
+## 🧰 Desenvolvimento
 
 <details>
-<summary>Clique para ver detalhes avançados</summary>
+<summary>Comandos úteis para desenvolvedores</summary>
 
-### Arquitetura
-- **Frontend**: Vite + React (Porta interna 8080)
-- **Backend**: Node.js + Express (Porta interna 4000)
-- **Proxy**: Nginx (Porta externa 80) - Redireciona tráfego baseado na URL.
-- **Banco de Dados**: SQLite (arquivo `dev.db`).
+```bash
+# Instalar dependências
+npm install
+npm --prefix server install
 
-### Comandos Úteis
-- **Parar tudo**: `docker compose down`
-- **Reiniciar**: `docker compose restart`
-- **Ver logs**: `docker compose logs -f`
+# Rodar em dev (sem Docker)
+npm run dev
+
+# Executar migrações do banco
+npm --prefix server run prisma:migrate
+
+# Ver schema do banco
+npm --prefix server run prisma:studio
+
+# Scripts de debug
+cd server
+node debug/manual_sync.js      # Sync manual do NetBox
+node debug/check_db.js          # Ver contadores do banco
+```
+
+### Variáveis de Ambiente
+
+Veja `.env.example` para lista completa. Principais:
+
+- `NETBOX_URL` / `NETBOX_TOKEN`: Credenciais do NetBox
+- `NETBOX_TENANT_GROUP_FILTER`: Grupo de tenants a sincronizar
+- `OXIDIZED_ENABLED`: Habilitar Oxidized
+- `JWT_SECRET`: Secret para tokens JWT
 
 </details>
+
+## 📄 Licença
+
+MIT
+
+## 🤝 Contribuindo
+
+Pull requests são bem-vindos! Para mudanças grandes, abra uma issue primeiro.

@@ -1,77 +1,69 @@
 # Changelog
 
-Todas as mudanças notáveis deste projeto serão documentadas aqui.
+Todas as mudanças notáveis neste projeto serão documentadas neste arquivo.
+
+O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/),
+e este projeto adere ao [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [v0.2.0] - 2025-11-22
+
+### ✨ Adicionado
+- **Integração NetBox Completa**: Sincronização automática de dispositivos, tenants, sites e custom fields
+- **Gestão de Credenciais**: Suporte a NetBox Secrets Plugin com fallback para credenciais da aplicação
+- **Filtros de Sincronização**: Filtragem por Tenant Group, roles, platforms, device types e sites
+- **Exclusão Inteligente**: Filtro automático de dispositivos "Caixa Preta" (case-insensitive com variações)
+- **Backup Automático**: Integração Oxidized com mapeamento automático de vendors/drivers
+- **Diff de Configurações**: Comparação visual entre versões de backup
+- **Acesso SSH**: Sessões SSH diretas via browser com registro de logs
+- **Multi-Tenant**: Isolamento completo de dados por tenant
+- **API de Saúde**: Endpoint `/health/services` para monitoramento de serviços
+- **Scripts de Debug**: Biblioteca de ferramentas de diagnóstico em `server/debug/`
+
+### 🔧 Modificado
+- **Manutenção > Zona de Perigo**: Botão de limpeza agora funciona corretamente para admins globais
+- **Sincronização NetBox**: Performance otimizada (cache de session key para evitar tentativas repetidas)
+- **UI de Aplicações**: Campos para credenciais SSH (Login/Senha) e chave RSA privada
+- **README.md**: Documentação completa com guias de instalação, configuração e troubleshooting
+
+### 🐛 Corrigido
+- **Prisma Error**: Removido argumento `mode: 'insensitive'` não suportado no SQLite
+- **Filtro "Caixa Preta"**: Regex aprimorado para capturar variações como `01-CAIXA-PRETA`
+- **Database Corruption**: Adicionado guia de recuperação no README
+- **Credential Fallback**: Implementação correta do fallback (Secrets → Custom Fields → App Config)
+- **Session Key Caching**: Evita milhares de requisições falhadas quando a chave RSA é inválida
+
+### 🔐 Segurança
+- Criptografia AES-256-GCM para credenciais no banco
+- Arquivo de chave RSA com permissões `0600`
+- `.gitignore` atualizado para excluir `.env`, `.pem`, `.db*` e `server/debug/`
+
+---
+
+## [v0.1.0] - 2025-11-15
+
+### ✨ Adicionado
+- Interface web com React + Vite
+- Backend Node.js + Express
+- Autenticação JWT
+- Discover SNMP (Interfaces e BGP Peers)
+- Integração básica com NetBox
+- Integração com Oxidized
+- Portainer para gestão de containers
+- Scripts de instalação (`install.sh`, `deploy_remote.sh`)
+- Docker Compose para deploy simplificado
+
+---
 
 ## [Unreleased]
 
-### Novidades
-- Script `update.sh` aprimorado com **backup automático** do banco de dados (`server/dev.db`) antes de cada atualização, mantendo as últimas 5 versões.
-- Script `update.sh` para atualização automatizada em produção (verifica git, pull, rebuild containers).
-- Nova aba **Backup** (UI) com listagem de dispositivos, status em tempo real do Oxidized, toggle liga/desliga e atalho para histórico de versões.
-- Integração direta com a API do Oxidized (`/nodes.json` e `/node/version.json`), exibindo status do último backup e as versões disponíveis.
-- Backend sincroniza o `router.db` (mantendo um bloco gerenciado) com base nos dispositivos marcados como ativos, incluindo usuário/senha/porta SSH.
-- Endpoints REST `/backup/devices` e `/backup/devices/:id/versions` para consumo pelo front.
-- Seed automático do usuário admin (`suporte@suporte.com.br` / `Ops_pass_`) com exigência de troca de senha no primeiro login e hint exibido na tela inicial enquanto a senha padrão não for alterada.
-- **Backup & Versionamento**:
-  - Histórico de versões ativado (Oxidized com output `git`).
-  - Comparação de versões (Diff) na interface web.
-  - Visualização de conteúdo de backup com busca e highlight.
-  - Correção de conexão SSH (ajuste de delimitador CSV e porta).
+### 🚧 Planejado
+- Integração Jumpserver para acesso SSH
+- Suporte a PostgreSQL
+- Dashboard com métricas de rede
+- Alertas e notificações
+- Backup incremental
 
-### Melhorias
-- Dispositivos passam a registrar `sshPort` e `backupEnabled`, permitindo configurar portas customizadas (ex.: 50022) e persistir a preferência no banco.
-- Script `deploy_netbox_ops_center_docker.sh` instala Docker/Portainer, monta `/etc/oxidized` dentro do container e injeta `OXIDIZED_API_URL`/`OXIDIZED_ROUTER_DB` automaticamente.
-- `.env`/`server/.env` documentam as novas variáveis necessárias para a integração.
+---
 
-### Correções
-- Sanitização unificada das respostas de dispositivos (`credUsername`/`hasCredPassword`) e sincronização automática do router.db após exclusão.
-
-## [v0.1.1] - 2025-11-21
-
-### Correções
-- **SNMP Discovery**: Corrigido bug crítico onde interfaces e peers eram salvos com valores `undefined` devido a incompatibilidade de nomes de propriedades entre o servidor SNMP e o processador de filas.
-- **Checkmk Integration**: Ajustada configuração de hosts para dispositivos de rede, forçando `tag_agent: 'no-agent'` e configurando credenciais SNMP (Community/Version) corretamente para evitar falhas de conexão do agente.
-- **Login**: Resetada senha do usuário de suporte e validado fluxo de autenticação.
-- **Filas**: Implementado script de limpeza automática para jobs falhados no Redis.
-
-### Novidades
-- **Service Monitoring**: Novo dashboard na aba **Manutenção** exibindo status em tempo real de:
-  - API Server
-  - SNMP Gateway
-  - Redis
-  - Database (Prisma)
-  - Queue Workers
-- **Health Check**: Endpoint `/health/services` aprimorado com verificação real do Redis e endpoint de saúde dedicado no servidor SNMP.
-- **Scripts Utilitários**: Adicionados scripts para diagnóstico e manutenção (`check_checkmk.js`, `update_checkmk.js`, `test_snmp_discovery.js`, `clear_failed_jobs.js`).
-
-## [v0.1.0] - 2025-11-14
-
-Primeira release pública do NetBox Ops Center (NetManager).
-
-### Novidades
-- Gateway SNMP (Node + net-snmp) com descoberta de Interfaces e Peers BGP (inclui `localAsn` e tentativa de descrição de peer quando suportada)
-- API Express + Prisma (SQLite) com modelos para Devices, Tenants, Applications, Descobertas (Interfaces/Peers), ASN Registry e AuditLog
-- UI Vite + React + shadcn-ui
-  - Dispositivos: CRUD, edição de credenciais com máscara e criptografia no servidor (AES‑256‑GCM)
-  - BGP Peers: persistência no banco, enriquecimento com nomes de ASN, filtro por tenant e opção “Mostrar iBGP”
-  - Configurações: descoberta por SNMP e salvamento em banco (interfaces e peers)
-  - Aplicações: cadastro e integração com NetBox (catálogo + sync com filtros), Jumpserver (teste)
-  - Dashboard: contadores reais de Dispositivos Ativos, Peers Descobertos e Tenants (grupo “K3G Solutions”)
-  - Manutenção: resumo, purge (dry-run/global), snapshot export/import e auditoria
-  - Usuários: login por email ou username, /me para perfil e troca de senha, /users (admin) para gestão
-- Boot tasks: enriquecimento de ASN a partir de peers já registrados
-- NetBox: filtro por Tenant Group (padrão “K3G Solutions”); sync com filtros opcionais (roles, platforms, device types, sites)
-- Sessão: 30m inativo → aviso 30s → logout; 401 exibe “Sessão expirada…”, 403 mostra “Acesso negado…” sem desconectar
-- Docker: script de deploy que sobe Web+API+SNMP (porta externa padrão 58080)
-- Diagnóstico: script `scripts/quick-diagnose.sh` para checagens rápidas (Web, API, SNMP, login, tenants, NetBox)
-
-### Mudanças importantes
-- Atualização de credenciais de dispositivo agora é via endpoint dedicado:
-  - `GET/PATCH /devices/:id/credentials` (password cifrada no banco). Não enviar `credentials` no `PATCH /devices/:id`.
-- Lista de tenants para admin é filtrada por `NETBOX_TENANT_GROUP_FILTER` (padrão: “K3G Solutions”).
-
-### Notas
-- Defina `JWT_SECRET` e `CRED_ENCRYPTION_KEY` fortes em produção.
-- Use TLS/HTTPS e restrinja portas expostas conforme necessidade.
-
+[v0.2.0]: https://github.com/keslleykledston/11-Netbox_ops_center/compare/v0.1.0...v0.2.0
 [v0.1.0]: https://github.com/keslleykledston/11-Netbox_ops_center/releases/tag/v0.1.0

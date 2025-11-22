@@ -16,9 +16,9 @@ const Applications = () => {
   const { toast } = useToast();
   const { applications, loading, error, updateApplication, createApplication } = useApplications();
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState({ url: "", apiKey: "" });
+  const [editForm, setEditForm] = useState({ url: "", apiKey: "", username: "", password: "", privateKey: "" });
   const [adding, setAdding] = useState(false);
-  const [newApp, setNewApp] = useState<{ name: string; url: string; apiKey: string }>({ name: "NetBox", url: "", apiKey: "" });
+  const [newApp, setNewApp] = useState<{ name: string; url: string; apiKey: string; username?: string; password?: string; privateKey?: string }>({ name: "NetBox", url: "", apiKey: "", username: "", password: "", privateKey: "" });
   const [netboxSyncFor, setNetboxSyncFor] = useState<string | null>(null);
   const [syncTenants, setSyncTenants] = useState(true);
   const [syncDevices, setSyncDevices] = useState(true);
@@ -65,16 +65,33 @@ const Applications = () => {
 
   const startEditing = (app: Application) => {
     setEditingId(app.id);
-    setEditForm({ url: app.url, apiKey: app.apiKey });
+    let username = "";
+    let password = "";
+    // Try to parse config for credentials
+    try {
+      if ((app as any).config) {
+        const conf = JSON.parse((app as any).config);
+        username = conf.username || "";
+        password = conf.password || "";
+      }
+    } catch { }
+    setEditForm({ url: app.url, apiKey: app.apiKey, username, password, privateKey: "" }); // Private key not loaded back for security/size
   };
 
   const cancelEditing = () => {
     setEditingId(null);
-    setEditForm({ url: "", apiKey: "" });
+    setEditForm({ url: "", apiKey: "", username: "", password: "", privateKey: "" });
   };
 
   const saveEdit = (appId: string) => {
-    updateApplication(appId, { url: editForm.url, apiKey: editForm.apiKey, status: "disconnected" });
+    updateApplication(appId, {
+      url: editForm.url,
+      apiKey: editForm.apiKey,
+      status: "disconnected",
+      username: editForm.username,
+      password: editForm.password,
+      privateKey: editForm.privateKey
+    } as any);
     setEditingId(null);
     toast({ title: "Dados salvos", description: "As informações de conexão foram atualizadas." });
   };
@@ -90,6 +107,9 @@ const Applications = () => {
         url: newApp.url,
         apiKey: newApp.apiKey,
         status: "disconnected",
+        username: newApp.username,
+        password: newApp.password,
+        privateKey: newApp.privateKey
       } as any);
       setAdding(false);
       setNewApp({ name: "NetBox", url: "", apiKey: "" });
@@ -222,6 +242,28 @@ const Applications = () => {
                   <Label>API Key</Label>
                   <Input type="password" value={newApp.apiKey} onChange={(e) => setNewApp({ ...newApp, apiKey: e.target.value })} placeholder="Sua chave de API" />
                 </div>
+                {/netbox/i.test(newApp.name) && (
+                  <>
+                    <div className="space-y-1">
+                      <Label>Login (Opcional)</Label>
+                      <Input value={newApp.username} onChange={(e) => setNewApp({ ...newApp, username: e.target.value })} placeholder="Usuário NetBox" />
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Senha (Opcional)</Label>
+                      <Input type="password" value={newApp.password} onChange={(e) => setNewApp({ ...newApp, password: e.target.value })} placeholder="Senha NetBox" />
+                    </div>
+                    <div className="space-y-1 md:col-span-3">
+                      <Label>Chave Privada RSA (Para Secrets)</Label>
+                      <textarea
+                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        value={newApp.privateKey}
+                        onChange={(e) => setNewApp({ ...newApp, privateKey: e.target.value })}
+                        placeholder="-----BEGIN RSA PRIVATE KEY----- ..."
+                      />
+                      <p className="text-xs text-muted-foreground">Cole o conteúdo do arquivo .pem aqui para descriptografar senhas.</p>
+                    </div>
+                  </>
+                )}
                 <div className="flex gap-2">
                   <Button size="sm" onClick={saveNew} disabled={!newApp.name || !newApp.url || !newApp.apiKey}>
                     <Save className="h-4 w-4 mr-1" /> Salvar
@@ -279,6 +321,39 @@ const Applications = () => {
                     placeholder="Sua chave de API"
                   />
                 </div>
+                {isNetbox(app) && editingId === app.id && (
+                  <>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label>Login (Opcional)</Label>
+                        <Input
+                          value={editForm.username}
+                          onChange={(e) => setEditForm(prev => ({ ...prev, username: e.target.value }))}
+                          placeholder="Usuário"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Senha (Opcional)</Label>
+                        <Input
+                          type="password"
+                          value={editForm.password}
+                          onChange={(e) => setEditForm(prev => ({ ...prev, password: e.target.value }))}
+                          placeholder="Senha"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Chave Privada RSA</Label>
+                      <textarea
+                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        value={editForm.privateKey}
+                        onChange={(e) => setEditForm(prev => ({ ...prev, privateKey: e.target.value }))}
+                        placeholder="-----BEGIN RSA PRIVATE KEY----- (Deixe em branco para manter a atual)"
+                      />
+                      <p className="text-xs text-muted-foreground">Cole a chave privada para atualizar. Deixe em branco para manter a existente.</p>
+                    </div>
+                  </>
+                )}
                 <div className="flex gap-2 flex-wrap">
                   {editingId === app.id ? (
                     <>

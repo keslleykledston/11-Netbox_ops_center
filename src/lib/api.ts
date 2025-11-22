@@ -234,6 +234,14 @@ export const api = {
   async getBackupVersions(id: number | string) {
     return apiFetch(`/backup/devices/${id}/versions`, { method: 'GET' });
   },
+  async getBackupDiff(node: string, oid1: string, oid2: string) {
+    const params = new URLSearchParams({ node, oid1, oid2 });
+    return apiFetch(`/backup/diff?${params.toString()}`, { method: 'GET' });
+  },
+  async getBackupContent(node: string, oid: string) {
+    const params = new URLSearchParams({ node, oid });
+    return apiFetch(`/backup/content?${params.toString()}`, { method: 'GET' });
+  },
   async getLogs(lines?: number, filter?: string) {
     const params = new URLSearchParams();
     if (lines) params.set('lines', String(lines));

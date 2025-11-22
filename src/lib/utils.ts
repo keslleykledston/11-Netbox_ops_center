@@ -63,6 +63,9 @@ export interface Device {
   backupEnabled?: boolean;
   monitoringEnabled?: boolean;
   snmpStatus?: string;
+  lastSnmpOk?: string;
+  sshStatus?: string;
+  lastSshOk?: string;
   credUsername?: string | null;
   hasCredPassword?: boolean;
   monitoring?: {

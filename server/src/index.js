@@ -8,7 +8,7 @@ import { PrismaClient } from "@prisma/client";
 import os from "node:os";
 import { getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
-import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus } from "./oxidized.js";
+import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus, getOxidizedDiff, getOxidizedContent } from "./modules/monitor/oxidized-service.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
 import { addNetboxSyncJob, addSnmpDiscoveryJob, addSnmpPollingJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
@@ -378,6 +378,27 @@ app.get("/devices", requireAuth, async (req, res) => {
   res.json(enriched);
 });
 
+import { checkDeviceSsh } from "./modules/access/ssh-check.js";
+
+// Helper to run SSH check and update device
+async function runSshCheckAndUpdate(device) {
+  const result = await checkDeviceSsh(device);
+  const data = {
+    sshStatus: result.status,
+    lastSshOk: result.ok ? new Date() : undefined,
+  };
+
+  // If SSH is OK and backup is enabled (or we want to auto-enable), we could do it here.
+  // For now, just update the status.
+  await prisma.device.update({ where: { id: device.id }, data });
+
+  if (result.ok && device.backupEnabled) {
+    await syncRouterDbFromDb();
+  }
+
+  return { ...device, ...data };
+}
+
 app.post("/devices", requireAuth, async (req, res) => {
   const tenantId =
     req.user.tenantId ||
@@ -395,14 +416,67 @@ app.post("/devices", requireAuth, async (req, res) => {
     snmpCommunity = null,
     snmpPort = null,
     sshPort = null,
+    username, // credentials
+    password, // credentials
+    backupEnabled = false,
   } = req.body || {};
 
   if (!name || !ipAddress || !manufacturer || !model) {
-    return res.status(400).json({ error: "name, ipAddress, manufacturer, model required" });
+    return res.status(400).json({ error: "Campos obrigatórios: name, ipAddress, manufacturer, model" });
   }
 
-  const data = {
-    tenantId,
+  try {
+    const data = {
+      tenantId,
+      name,
+      hostname,
+      ipAddress,
+      deviceType,
+      manufacturer,
+      model,
+      status,
+      snmpVersion,
+      snmpCommunity,
+      snmpPort: snmpPort ? Number(snmpPort) : null,
+      sshPort: sshPort ? Number(sshPort) : null,
+      backupEnabled: !!backupEnabled,
+    };
+
+    if (username) data.credUsername = username;
+    if (password) {
+      data.credPasswordEnc = encryptSecret(password);
+      data.credUpdatedAt = new Date();
+    }
+
+    let device = await prisma.device.create({ data });
+
+    // Run SSH check in background (or await if fast enough - let's await to give immediate feedback)
+    if (device.credUsername && device.credPasswordEnc) {
+      device = await runSshCheckAndUpdate(device);
+    }
+
+    // Initial SNMP discovery if configured
+    if (device.snmpVersion && device.snmpCommunity) {
+      addSnmpDiscoveryJob(device.id, "interfaces", req.user?.sub, req.user?.tenantId).catch(() => { });
+    }
+
+    res.status(201).json(sanitizeDeviceOutput(device));
+  } catch (e) {
+    if (e.code === "P2002") {
+      return res.status(409).json({ error: "Dispositivo já existe (nome ou IP duplicado)" });
+    }
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.patch("/devices/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const device = await prisma.device.findUnique({ where: { id } });
+  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  const {
     name,
     hostname,
     ipAddress,
@@ -413,85 +487,46 @@ app.post("/devices", requireAuth, async (req, res) => {
     snmpVersion,
     snmpCommunity,
     snmpPort,
-    sshPort: sshPort ? Number(sshPort) : null,
-    credUsername: null,
-    credPasswordEnc: null,
-    credUpdatedAt: null,
-    backupEnabled: req.body.backupEnabled || false,
-    monitoringEnabled: req.body.monitoringEnabled || false,
-    snmpStatus: 'unknown',
-  };
+    sshPort,
+    username,
+    password,
+    backupEnabled,
+  } = req.body || {};
 
-  // Handle credentials directly in creation
-  const cu = String(req.body.credUsername || req.body.credentials?.username || '').trim();
-  const cp = String(req.body.credPasswordEnc || req.body.credentials?.password || '').trim();
+  const data = {};
+  if (name !== undefined) data.name = name;
+  if (hostname !== undefined) data.hostname = hostname;
+  if (ipAddress !== undefined) data.ipAddress = ipAddress;
+  if (deviceType !== undefined) data.deviceType = deviceType;
+  if (manufacturer !== undefined) data.manufacturer = manufacturer;
+  if (model !== undefined) data.model = model;
+  if (status !== undefined) data.status = status;
+  if (snmpVersion !== undefined) data.snmpVersion = snmpVersion;
+  if (snmpCommunity !== undefined) data.snmpCommunity = snmpCommunity;
+  if (snmpPort !== undefined) data.snmpPort = snmpPort ? Number(snmpPort) : null;
+  if (sshPort !== undefined) data.sshPort = sshPort ? Number(sshPort) : null;
+  if (backupEnabled !== undefined) data.backupEnabled = !!backupEnabled;
 
-  if (cu) data.credUsername = cu;
-  if (cp) {
-    data.credPasswordEnc = encryptSecret(cp);
+  if (username !== undefined) data.credUsername = username;
+  if (password !== undefined) {
+    data.credPasswordEnc = password ? encryptSecret(password) : null;
     data.credUpdatedAt = new Date();
   }
 
-  const created = await prisma.device.create({ data });
+  try {
+    const updated = await prisma.device.update({ where: { id }, data });
 
-  // Trigger Checkmk sync if monitoring enabled
-  if (created.monitoringEnabled) {
-    addCheckmkSyncJob('add', created.id, created, req.user.sub).catch(console.error);
-  }
-
-  res.status(201).json(sanitizeDeviceOutput(created));
-});
-
-app.patch("/devices/:id", requireAuth, async (req, res) => {
-  const id = Number(req.params.id);
-  const device = await prisma.device.findUnique({ where: { id } });
-  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
-    return res.status(404).json({ error: "Not found" });
-  }
-  // Sanitize and coerce payload
-  const body = req.body || {};
-  const allowed = [
-    'name', 'hostname', 'ipAddress', 'manufacturer', 'model', 'deviceType', 'status',
-    'snmpVersion', 'snmpCommunity', 'snmpPort', 'sshPort', 'osVersion', 'location', 'description', 'tenantId',
-    'backupEnabled', 'monitoringEnabled'
-  ];
-  const data = {};
-  for (const k of allowed) {
-    if (body[k] !== undefined && body[k] !== null) data[k] = body[k];
-  }
-  if (data.snmpPort !== undefined) data.snmpPort = Number(data.snmpPort);
-  if (data.sshPort !== undefined) data.sshPort = data.sshPort === null ? null : Number(data.sshPort);
-  if (data.tenantId !== undefined) data.tenantId = Number(data.tenantId);
-  // Credentials update in same request if provided
-  if (body?.credentials) {
-    if (typeof body.credentials.username === 'string') data.credUsername = body.credentials.username;
-    if (typeof body.credentials.password === 'string' && body.credentials.password !== '********') {
-      if (body.credentials.password.length > 0) {
-        data.credPasswordEnc = encryptSecret(body.credentials.password);
-        data.credUpdatedAt = new Date();
+    // Re-run SSH check if relevant fields changed
+    if (ipAddress || sshPort || username || password || (backupEnabled && !device.backupEnabled)) {
+      if (updated.credUsername && updated.credPasswordEnc) {
+        await runSshCheckAndUpdate(updated);
       }
     }
+
+    res.json(sanitizeDeviceOutput(await prisma.device.findUnique({ where: { id } })));
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
   }
-
-  // Direct credential update fields
-  if (body.credUsername !== undefined) data.credUsername = body.credUsername;
-  if (body.credPassword !== undefined && body.credPassword !== '********') {
-    data.credPasswordEnc = encryptSecret(body.credPassword);
-    data.credUpdatedAt = new Date();
-  }
-
-  const updated = await prisma.device.update({ where: { id }, data });
-
-  // Handle Checkmk sync on change
-  if (data.monitoringEnabled !== undefined) {
-    const action = data.monitoringEnabled ? 'add' : 'delete';
-    addCheckmkSyncJob(action, updated.id, updated, req.user.sub).catch(console.error);
-  } else if (updated.monitoringEnabled && (data.ipAddress || data.name)) {
-    // If IP or name changed and monitoring is on, update host
-    addCheckmkSyncJob('update', updated.id, updated, req.user.sub).catch(console.error);
-  }
-
-  res.json(sanitizeDeviceOutput(updated));
 });
 
 app.delete("/devices/:id", requireAuth, async (req, res) => {
@@ -660,16 +695,21 @@ app.patch('/backup/devices/:id', requireAuth, async (req, res) => {
 });
 
 app.get('/backup/devices/:id/versions', requireAuth, async (req, res) => {
-  const id = Number(req.params.id);
-  const device = await prisma.device.findUnique({ where: { id } });
-  if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
-    return res.status(404).json({ error: 'Not found' });
+  try {
+    const id = Number(req.params.id);
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    const resp = await fetchOxidizedVersions(device.name);
+    if (!resp?.ok) {
+      return res.status(502).json({ error: resp?.error || 'Oxidized indisponível' });
+    }
+    res.json(resp.versions || []);
+  } catch (e) {
+    console.error('[BACKUP][ERROR] Failed to fetch versions:', e);
+    res.status(500).json({ error: String(e?.message || e) });
   }
-  const resp = await fetchOxidizedVersions(device.name);
-  if (!resp?.ok) {
-    return res.status(502).json({ error: resp?.error || 'Oxidized indisponível' });
-  }
-  res.json(resp.versions || []);
 });
 
 // Applications
@@ -1033,10 +1073,42 @@ app.post('/asn-registry', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/asn-registry/reprocess', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    await refreshAsnRegistryFromPeers();
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
+    const result = await refreshAsnRegistryFromPeers();
+    res.json({ diff: result.diff });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/backup/content', requireAuth, async (req, res) => {
+  try {
+    const { node, oid } = req.query;
+    if (!node || !oid) {
+      return res.status(400).json({ error: 'Missing node or oid' });
+    }
+    const result = await getOxidizedContent(node, oid);
+    if (!result.ok) {
+      return res.status(500).json({ error: result.error });
+    }
+    res.json({ content: result.content });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/backup/diff', requireAuth, async (req, res) => {
+  try {
+    const { node, oid1, oid2 } = req.query;
+    if (!node || !oid1 || !oid2) {
+      return res.status(400).json({ error: 'Missing node, oid1, or oid2' });
+    }
+    const result = await getOxidizedDiff(node, oid1, oid2);
+    if (!result.ok) {
+      return res.status(500).json({ error: result.error });
+    }
+    res.json({ diff: result.diff });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

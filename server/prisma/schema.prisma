@@ -63,6 +63,8 @@ model Device {
   monitoringEnabled Boolean @default(false)
   snmpStatus    String?  // "ok", "error", "unknown"
   lastSnmpOk    DateTime?
+  sshStatus     String?  // "ok", "error", "auth_error", "timeout", "unknown"
+  lastSshOk     DateTime?
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
   sshSessions  SshSession[]

@@ -7,7 +7,10 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertTriangle, HardDrive, Loader2, RefreshCw, ShieldCheck, XCircle, History } from "lucide-react";
+import { AlertTriangle, HardDrive, Loader2, RefreshCw, ShieldCheck, XCircle, History, GitCompare, FileDiff, Eye, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
 
@@ -50,6 +53,17 @@ const statusBadge = (status?: string) => {
   return { text: normalized || 'pendente', className: 'bg-amber-500/10 text-amber-500' };
 };
 
+const formatDate = (dateStr: string | null | undefined) => {
+  if (!dateStr) return '--';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '--';
+    return d.toLocaleString();
+  } catch {
+    return '--';
+  }
+};
+
 export default function Backup() {
   const [devices, setDevices] = useState<BackupDevice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,7 +72,18 @@ export default function Backup() {
   const [versions, setVersions] = useState<OxidizedVersion[]>([]);
   const [integration, setIntegration] = useState<BackupApiResponse["oxidized"]>({ available: true, message: null });
   const [routerDbInfo, setRouterDbInfo] = useState<BackupApiResponse["routerDb"]>({ writable: true, error: null });
+
   const [togglingId, setTogglingId] = useState<number | null>(null);
+
+  // Diff state
+  const [selectedVersions, setSelectedVersions] = useState<string[]>([]);
+  const [diffModalOpen, setDiffModalOpen] = useState(false);
+
+  const [diffContent, setDiffContent] = useState<string | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'diff' | 'content'>('diff');
+  const [searchTerm, setSearchTerm] = useState('');
+
   const { toast } = useToast();
 
   const loadData = async () => {
@@ -83,7 +108,7 @@ export default function Backup() {
 
   useEffect(() => {
     loadData();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadVersions = async (id: number, device?: BackupDevice | null) => {
@@ -136,7 +161,7 @@ export default function Backup() {
         </div>
 
         {(!integration.available || !routerDbInfo.writable) && (
-          <Alert variant="warning">
+          <Alert variant="destructive">
             <AlertTriangle className="h-4 w-4" />
             <AlertTitle>Integração parcial</AlertTitle>
             <AlertDescription>
@@ -190,7 +215,7 @@ export default function Backup() {
                             <Badge className={status.className}>{status.text}</Badge>
                           </TableCell>
                           <TableCell className="text-sm text-muted-foreground">
-                            {device.oxidized?.lastRun ? new Date(device.oxidized.lastRun).toLocaleString() : '--'}
+                            {formatDate(device.oxidized?.lastRun)}
                           </TableCell>
                           <TableCell className="text-center">
                             <Switch
@@ -228,33 +253,164 @@ export default function Backup() {
                 <AlertTriangle className="h-4 w-4" />Nenhum histórico disponível para {selectedDevice.name}.
               </div>
             ) : (
-              <ScrollArea className="h-60">
-                <div className="space-y-3 pr-4">
-                  {versions.map((version, index) => (
-                    <div key={`${version.oid || version.time || index}`} className="border rounded-lg p-3 flex items-center justify-between">
-                      <div>
-                        <div className="font-medium">Versão #{version.num ?? versions.length - index}</div>
-                        <div className="text-xs text-muted-foreground">{version.time || version.date || 'Sem data'}</div>
-                      </div>
-                      <Badge variant="secondary">{version.status || 'snapshot'}</Badge>
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            )}
-          </CardContent>
-        </Card>
+              <div className="space-y-4">
+                <div className="flex justify-between items-center">
+                  <div className="text-sm text-muted-foreground">
+                    Selecione até 2 versões para comparar.
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    disabled={selectedVersions.length === 0 || selectedVersions.length > 2}
+                    onClick={async () => {
+                      if (selectedVersions.length === 0 || !selectedDevice) return;
 
-        {devices.some((d) => d.backupEnabled && d.hasCredPassword) && (
-          <Alert>
-            <ShieldCheck className="h-4 w-4" />
-            <AlertTitle>Backup automático</AlertTitle>
-            <AlertDescription>
-              Dispositivos habilitados serão sincronizados no arquivo router.db automaticamente e terão backups diários no Oxidized.
-            </AlertDescription>
-          </Alert>
-        )}
-      </div>
-    </DashboardLayout>
+                      setDiffModalOpen(true);
+                      setDiffLoading(true);
+                      setSearchTerm('');
+
+                      try {
+                        if (selectedVersions.length === 2) {
+                          setViewMode('diff');
+                          const res = await api.getBackupDiff(selectedDevice.name, selectedVersions[1], selectedVersions[0]);
+                          setDiffContent(res?.diff || 'Sem diferenças.');
+                        } else {
+                          setViewMode('content');
+                          const res = await api.getBackupContent(selectedDevice.name, selectedVersions[0]);
+                          setDiffContent(res?.content || 'Conteúdo vazio.');
+                        }
+                      } catch (err) {
+                        setDiffContent('Erro ao carregar: ' + (err instanceof Error ? err.message : String(err)));
+                      } finally {
+                        setDiffLoading(false);
+                      }
+                    }}
+                  >
+                    {selectedVersions.length === 2 ? <GitCompare className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+                    {selectedVersions.length === 2 ? 'Comparar (2)' : 'Visualizar (1)'}
+                  </Button>
+                </div>
+
+                <ScrollArea className="h-60 border rounded-md">
+                  <div className="p-2 space-y-1">
+                    {versions.map((version, index) => {
+                      const oid = version.oid || '';
+                      const isSelected = selectedVersions.includes(oid);
+                      return (
+                        <div
+                          key={`${oid || index}`}
+                          className={`flex items-center justify-between p-2 rounded-md border ${isSelected ? 'bg-primary/10 border-primary' : 'hover:bg-muted'}`}
+                          onClick={() => {
+                            if (!oid) return;
+                            if (isSelected) {
+                              setSelectedVersions(prev => prev.filter(v => v !== oid));
+                            } else {
+                              if (selectedVersions.length < 2) {
+                                setSelectedVersions(prev => [oid, ...prev]); // Add to start
+                              } else {
+                                toast({ title: "Limite atingido", description: "Você só pode selecionar 2 versões para comparar." });
+                              }
+                            }
+                          }}
+                        >
+                          <div className="flex items-center gap-3 cursor-pointer flex-1">
+                            <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground'}`}>
+                              {isSelected && <div className="w-2 h-2 bg-current rounded-full" />}
+                            </div>
+                            <div>
+                              <div className="font-medium text-sm">Versão #{version.num ?? versions.length - index}</div>
+                              <div className="text-xs text-muted-foreground">{version.time || version.date || 'Sem data'}</div>
+                            </div>
+                          </div>
+                          <Badge variant="secondary" className="text-xs">{version.status || 'snapshot'}</Badge>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </ScrollArea>
+              </div>
+            )
+            }
+          </CardContent >
+        </Card >
+
+        {
+          devices.some((d) => d.backupEnabled && d.hasCredPassword) && (
+            <Alert>
+              <ShieldCheck className="h-4 w-4" />
+              <AlertTitle>Segurança</AlertTitle>
+              <AlertDescription>As senhas são armazenadas com criptografia forte (AES-256-GCM).</AlertDescription>
+            </Alert>
+          )
+        }
+      </div >
+
+      {/* Diff/Content Modal */}
+      <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              {viewMode === 'diff' ? <FileDiff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+              {viewMode === 'diff' ? 'Comparação de Versões' : 'Visualização de Backup'}
+            </DialogTitle>
+            <DialogDescription>
+              {viewMode === 'diff'
+                ? `Comparando as versões selecionadas do dispositivo ${selectedDevice?.name}.`
+                : `Visualizando conteúdo da versão selecionada do dispositivo ${selectedDevice?.name}.`
+              }
+            </DialogDescription>
+          </DialogHeader>
+
+          {viewMode === 'content' && (
+            <div className="relative">
+              <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                placeholder="Buscar no conteúdo..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+          )}
+
+          <div className="flex-1 overflow-auto bg-muted/50 p-4 rounded-md border font-mono text-xs whitespace-pre-wrap">
+            {diffLoading ? (
+              <div className="flex items-center justify-center h-20 gap-2">
+                <Loader2 className="h-5 w-5 animate-spin" /> Carregando...
+              </div>
+            ) : diffContent ? (
+              viewMode === 'content' && searchTerm ? (
+                (() => {
+                  const filteredLines = diffContent.split('\n').map((line, i) => {
+                    if (!line.toLowerCase().includes(searchTerm.toLowerCase())) return null;
+                    const parts = line.split(new RegExp(`(${searchTerm})`, 'gi'));
+                    return (
+                      <div key={i} className="border-b border-border/50 pb-0.5 mb-0.5">
+                        <span className="text-muted-foreground mr-2 select-none w-8 inline-block text-right">{i + 1}</span>
+                        {parts.map((part, j) =>
+                          part.toLowerCase() === searchTerm.toLowerCase()
+                            ? <span key={j} className="bg-yellow-500/30 text-yellow-500 font-bold">{part}</span>
+                            : part
+                        )}
+                      </div>
+                    );
+                  }).filter(Boolean);
+
+                  return filteredLines.length > 0 ? (
+                    filteredLines
+                  ) : (
+                    <div className="text-muted-foreground italic">Nenhum resultado encontrado para "{searchTerm}".</div>
+                  );
+                })()
+              ) : (
+                diffContent
+              )
+            ) : (
+              <div className="text-center text-muted-foreground">Nenhum conteúdo disponível.</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </DashboardLayout >
   );
 }

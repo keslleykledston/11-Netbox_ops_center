@@ -267,6 +267,22 @@ export default function Devices() {
                               </div>
                             </div>
                             <div className="flex justify-between text-sm">
+                              <span className="text-muted-foreground">SSH</span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{device.sshPort || "22"}</span>
+                                {device.sshStatus && (
+                                  <div
+                                    className={`h-2.5 w-2.5 rounded-full ${device.sshStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
+                                      device.sshStatus === 'auth_error' ? 'bg-orange-500' :
+                                        device.sshStatus === 'timeout' ? 'bg-yellow-500' :
+                                          'bg-red-500'
+                                      }`}
+                                    title={`Status SSH: ${device.sshStatus}`}
+                                  />
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex justify-between text-sm">
                               <span className="text-muted-foreground">Status</span>
                               <span className={`font-medium ${badgeFg}`}>{badgeText}</span>
                             </div>

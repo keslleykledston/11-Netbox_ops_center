@@ -12,6 +12,11 @@ Todas as mudanças notáveis deste projeto serão documentadas aqui.
 - Backend sincroniza o `router.db` (mantendo um bloco gerenciado) com base nos dispositivos marcados como ativos, incluindo usuário/senha/porta SSH.
 - Endpoints REST `/backup/devices` e `/backup/devices/:id/versions` para consumo pelo front.
 - Seed automático do usuário admin (`suporte@suporte.com.br` / `Ops_pass_`) com exigência de troca de senha no primeiro login e hint exibido na tela inicial enquanto a senha padrão não for alterada.
+- **Backup & Versionamento**:
+  - Histórico de versões ativado (Oxidized com output `git`).
+  - Comparação de versões (Diff) na interface web.
+  - Visualização de conteúdo de backup com busca e highlight.
+  - Correção de conexão SSH (ajuste de delimitador CSV e porta).
 
 ### Melhorias
 - Dispositivos passam a registrar `sshPort` e `backupEnabled`, permitindo configurar portas customizadas (ex.: 50022) e persistir a preferência no banco.

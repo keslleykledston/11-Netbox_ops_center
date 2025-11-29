@@ -4,9 +4,8 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { api } from "@/lib/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Search, Server, MoreVertical, RefreshCw, Loader2 } from "lucide-react";
+import { Plus, Search, Server, MoreVertical, RefreshCw, Loader2, Info, ChevronDown } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -17,6 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useDevices } from "@/hooks/use-mobile";
 import AddDeviceDialog from "@/components/devices/AddDeviceDialog";
 import EditDeviceDialog from "@/components/devices/EditDeviceDialog";
+import { DeviceConfigDialog } from "@/components/devices/DeviceConfigDialog";
 import type { Device } from "@/lib/utils";
 
 import {
@@ -30,6 +30,19 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card";
+
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { useTenantContext } from "@/contexts/TenantContext";
+
 export default function Devices() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -37,22 +50,31 @@ export default function Devices() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
   const [deviceToDelete, setDeviceToDelete] = useState<string | null>(null);
-  const [tenants, setTenants] = useState<Array<{ id: number; name: string }>>([]);
-  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
-  const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(selectedTenantId);
+  const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
+  const [shouldLoadDevices, setShouldLoadDevices] = useState(false);
+  const { tenants, selectedTenantId, setSelectedTenantId, loading: tenantLoading } = useTenantContext();
+  const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(selectedTenantId || undefined, true); // skipInitialLoad = true
   const navigate = useNavigate();
+  const [configDevice, setConfigDevice] = useState<Device | null>(null);
+  const [isConfigDialogOpen, setIsConfigDialogOpen] = useState(false);
 
+  // Control when to load devices
   useEffect(() => {
-    // Carrega tenants de acordo com permissões do usuário
-    api.listTenants().then((list: any[]) => {
-      const mapped = (list || []).map((t: any) => ({ id: Number(t.id), name: String(t.name) }));
-      setTenants(mapped);
-      if (!selectedTenantId && mapped.length > 0) setSelectedTenantId(String(mapped[0].id));
-    }).catch(() => setTenants([]));
-  }, []);
+    // Load if: has 2+ search chars (global) OR tenant is selected
+    const shouldLoad = searchTerm.length >= 2 || selectedTenantId !== null;
+    setShouldLoadDevices(shouldLoad && !tenantLoading);
+
+    if (shouldLoad && !tenantLoading) {
+      refreshDevices();
+    }
+  }, [searchTerm, selectedTenantId, refreshDevices, tenantLoading]);
   const openEditDialog = (device: Device) => {
     setSelectedDevice(device);
     setIsEditDialogOpen(true);
+  };
+  const openConfigDialog = (device: Device) => {
+    setConfigDevice(device);
+    setIsConfigDialogOpen(true);
   };
 
   const filteredDevices = devices.filter((device) => {
@@ -159,7 +181,7 @@ export default function Devices() {
                 />
               </div>
               <div className="w-[260px]">
-                <Select value={selectedTenantId} onValueChange={(v) => { setSelectedTenantId(v); refreshDevices(); }}>
+                <Select value={selectedTenantId || ""} onValueChange={(v) => setSelectedTenantId(v)} disabled={tenantLoading || tenants.length === 0}>
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione o Tenant" />
                   </SelectTrigger>
@@ -178,6 +200,13 @@ export default function Devices() {
                 <div className="flex items-center justify-center py-8">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                   <span className="ml-2 text-muted-foreground">Carregando dispositivos...</span>
+                </div>
+              ) : !shouldLoadDevices ? (
+                <div className="text-center py-8">
+                  <Server className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+                  <p className="text-muted-foreground">
+                    Selecione um tenant no menu lateral ou digite ao menos 2 caracteres para buscar
+                  </p>
                 </div>
               ) : filteredDevices.length === 0 ? (
                 <div className="text-center py-8">
@@ -201,102 +230,193 @@ export default function Devices() {
                     const badgeFg = isActive ? "text-success" : isMaint ? "text-warning" : "text-warning";
                     const badgeText = isActive ? "Ativo" : isMaint ? "Manutenção" : "Inativo";
                     const monitoringBadge = getMonitoringBadge(device.monitoring);
+                    const isExpanded = expandedCards.has(device.id);
+
+                    const toggleExpand = () => {
+                      setExpandedCards((prev) => {
+                        const newSet = new Set(prev);
+                        if (newSet.has(device.id)) {
+                          newSet.delete(device.id);
+                        } else {
+                          newSet.add(device.id);
+                        }
+                        return newSet;
+                      });
+                    };
 
                     return (
-                      <Card key={device.id} className="hover:bg-accent/50 transition-colors cursor-pointer">
-                        <CardHeader className="pb-3">
-                          <div className="flex items-start justify-between">
-                            <div className="flex items-center gap-3">
-                              <div className={`p-2 rounded-lg ${badgeBg}`}>
-                                <Server className={`h-5 w-5 ${badgeFg}`} />
+                      <Card key={device.id} className="hover:bg-accent/50 transition-colors">
+                        <Collapsible open={isExpanded} onOpenChange={toggleExpand}>
+                          <CardHeader className="pb-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-3 flex-1 min-w-0">
+                                <div className={`p-2 rounded-lg ${badgeBg} shrink-0`}>
+                                  <Server className={`h-5 w-5 ${badgeFg}`} />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <CardTitle className="text-base truncate">{device.name}</CardTitle>
+                                    <HoverCard openDelay={200} closeDelay={100}>
+                                      <HoverCardTrigger asChild>
+                                        <Button variant="ghost" size="sm" className="h-5 w-5 p-0 hover:bg-accent shrink-0">
+                                          <Info className="h-3.5 w-3.5 text-muted-foreground" />
+                                        </Button>
+                                      </HoverCardTrigger>
+                                      <HoverCardContent className="w-80" side="right">
+                                        <div className="space-y-2">
+                                          <h4 className="text-sm font-semibold">Informações do Dispositivo</h4>
+                                          <div className="grid gap-2 text-sm">
+                                            <div className="flex justify-between">
+                                              <span className="text-muted-foreground">ID:</span>
+                                              <span className="font-mono">{device.id}</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                              <span className="text-muted-foreground">Nome:</span>
+                                              <span className="font-medium">{device.name}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-muted-foreground">SNMP:</span>
+                                              <div className="flex items-center gap-2">
+                                                {device.snmpStatus === 'ok' ? (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-success/10 text-success">✓ OK</span>
+                                                ) : device.snmpStatus === 'error' ? (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/10 text-destructive">✗ Erro</span>
+                                                ) : (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">—</span>
+                                                )}
+                                                {device.lastSnmpOk && (
+                                                  <span className="text-xs text-muted-foreground">
+                                                    {new Date(device.lastSnmpOk).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}
+                                                  </span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-muted-foreground">SSH:</span>
+                                              <div className="flex items-center gap-2">
+                                                {device.sshStatus === 'ok' ? (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-success/10 text-success">✓ Porta {device.sshPort || 22}</span>
+                                                ) : device.sshStatus ? (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/10 text-destructive">✗ Porta {device.sshPort || 22}</span>
+                                                ) : (
+                                                  <span className="text-xs px-2 py-0.5 rounded-full bg-muted text-muted-foreground">Porta {device.sshPort || 22}</span>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="border-t pt-2 mt-2">
+                                              <div className="flex gap-2 flex-wrap">
+                                                <span className={`text-xs px-2 py-0.5 rounded-full ${device.status === 'active' ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'}`}>
+                                                  {device.status === 'active' ? '✓' : '○'} Ativo
+                                                </span>
+                                                <span className={`text-xs px-2 py-0.5 rounded-full ${device.monitoringEnabled ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}`}>
+                                                  {device.monitoringEnabled ? '✓' : '○'} Monitor
+                                                </span>
+                                                <span className={`text-xs px-2 py-0.5 rounded-full ${device.backupEnabled ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400' : 'bg-muted text-muted-foreground'}`}>
+                                                  {device.backupEnabled ? '✓' : '○'} Backup
+                                                </span>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </HoverCardContent>
+                                    </HoverCard>
+                                  </div>
+                                  <CardDescription className="text-xs truncate">{device.ipAddress}</CardDescription>
+                                </div>
                               </div>
-                              <div>
-                                <CardTitle className="text-lg">{device.name}</CardTitle>
-                                <CardDescription>{device.hostname || device.ipAddress}</CardDescription>
+                              <div className="flex items-center gap-1 shrink-0">
+                                <CollapsibleTrigger asChild>
+                                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                    <ChevronDown className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                                  </Button>
+                                </CollapsibleTrigger>
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                      <MoreVertical className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onClick={() => openEditDialog(device)}>Editar</DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => navigate(`/access/terminal?deviceId=${device.id}`)}>
+                                      Terminal Web
+                                    </DropdownMenuItem>
+                                    <DropdownMenuItem onClick={() => openConfigDialog(device)}>Configurações</DropdownMenuItem>
+                                    <DropdownMenuItem>Logs</DropdownMenuItem>
+                                    <DropdownMenuItem
+                                      className="text-destructive"
+                                      onClick={() => setDeviceToDelete(device.id)}
+                                    >
+                                      Remover
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
                               </div>
                             </div>
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm">
-                                  <MoreVertical className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => openEditDialog(device)}>Editar</DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => navigate(`/access/terminal?deviceId=${device.id}`)}>
-                                  Terminal Web
-                                </DropdownMenuItem>
-                                <DropdownMenuItem>Configurações</DropdownMenuItem>
-                                <DropdownMenuItem>Logs</DropdownMenuItem>
-                                <DropdownMenuItem
-                                  className="text-destructive"
-                                  onClick={() => setDeviceToDelete(device.id)}
-                                >
-                                  Remover
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="pt-0">
-                          <div className="space-y-3">
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Fabricante</span>
-                              <span className="font-medium">{device.manufacturer}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Modelo</span>
-                              <span className="font-medium">{device.model}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">IP</span>
-                              <span className="font-medium">{device.ipAddress}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">SNMP</span>
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium">{device.snmpVersion || "—"}</span>
-                                {device.snmpStatus && (
-                                  <div
-                                    className={`h-2.5 w-2.5 rounded-full ${device.snmpStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
-                                      device.snmpStatus === 'error' ? 'bg-red-500' : 'bg-zinc-600'
-                                      }`}
-                                    title={`Status SNMP: ${device.snmpStatus}`}
-                                  />
-                                )}
+                          </CardHeader>
+
+                          <CollapsibleContent>
+                            <CardContent className="pt-0">
+                              <div className="space-y-3">
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">Fabricante</span>
+                                  <span className="font-medium">{device.manufacturer}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">Modelo</span>
+                                  <span className="font-medium">{device.model}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">Hostname</span>
+                                  <span className="font-medium">{device.hostname || "—"}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">SNMP</span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">{device.snmpVersion || "—"}</span>
+                                    {device.snmpStatus && (
+                                      <div
+                                        className={`h-2.5 w-2.5 rounded-full ${device.snmpStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
+                                          device.snmpStatus === 'error' ? 'bg-red-500' : 'bg-zinc-600'
+                                          }`}
+                                        title={`Status SNMP: ${device.snmpStatus}`}
+                                      />
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">SSH</span>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">{device.sshPort || "22"}</span>
+                                    {device.sshStatus && (
+                                      <div
+                                        className={`h-2.5 w-2.5 rounded-full ${device.sshStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
+                                          device.sshStatus === 'auth_error' ? 'bg-orange-500' :
+                                            device.sshStatus === 'timeout' ? 'bg-yellow-500' :
+                                              'bg-red-500'
+                                          }`}
+                                        title={`Status SSH: ${device.sshStatus}`}
+                                      />
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">Status</span>
+                                  <span className={`font-medium ${badgeFg}`}>{badgeText}</span>
+                                </div>
+                                <div className="flex justify-between text-sm">
+                                  <span className="text-muted-foreground">Monitoramento</span>
+                                  <span
+                                    className={`font-medium ${monitoringBadge.fg}`}
+                                    title={device.monitoring?.lastCheck ? `Última coleta: ${new Date(device.monitoring.lastCheck).toLocaleString()}` : undefined}
+                                  >
+                                    {monitoringBadge.text}
+                                  </span>
+                                </div>
                               </div>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">SSH</span>
-                              <div className="flex items-center gap-2">
-                                <span className="font-medium">{device.sshPort || "22"}</span>
-                                {device.sshStatus && (
-                                  <div
-                                    className={`h-2.5 w-2.5 rounded-full ${device.sshStatus === 'ok' ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]' :
-                                      device.sshStatus === 'auth_error' ? 'bg-orange-500' :
-                                        device.sshStatus === 'timeout' ? 'bg-yellow-500' :
-                                          'bg-red-500'
-                                      }`}
-                                    title={`Status SSH: ${device.sshStatus}`}
-                                  />
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Status</span>
-                              <span className={`font-medium ${badgeFg}`}>{badgeText}</span>
-                            </div>
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Monitoramento</span>
-                              <span
-                                className={`font-medium ${monitoringBadge.fg}`}
-                                title={device.monitoring?.lastCheck ? `Última coleta: ${new Date(device.monitoring.lastCheck).toLocaleString()}` : undefined}
-                              >
-                                {monitoringBadge.text}
-                              </span>
-                            </div>
-                          </div>
-                        </CardContent>
+                            </CardContent>
+                          </CollapsibleContent>
+                        </Collapsible>
                       </Card>
                     );
                   })}
@@ -317,6 +437,14 @@ export default function Devices() {
             if (!open) setSelectedDevice(null);
           }}
           device={selectedDevice}
+        />
+        <DeviceConfigDialog
+          open={isConfigDialogOpen}
+          onOpenChange={(open) => {
+            setIsConfigDialogOpen(open);
+            if (!open) setConfigDevice(null);
+          }}
+          device={configDevice}
         />
 
         <AlertDialog open={!!deviceToDelete} onOpenChange={(open) => !open && setDeviceToDelete(null)}>

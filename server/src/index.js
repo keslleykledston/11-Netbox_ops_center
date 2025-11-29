@@ -134,7 +134,7 @@ async function refreshAsnRegistryFromPeers() {
     const unique = Array.from(new Set(peers.map((p) => Number(p.asn || 0)).filter((n) => Number.isFinite(n) && n > 0)));
     if (unique.length === 0) return;
     const existing = await prisma.asnRegistry.findMany({ where: { asn: { in: unique } } });
-    const known = new Set(existing.map((e) => Number(e.asn)));
+    const known = new Set(existing.filter((e) => e.name && String(e.name).trim().length > 0).map((e) => Number(e.asn)));
     const toLookup = unique.filter((n) => !known.has(n));
     for (const asn of toLookup) {
       const name = await lookupAsnName(asn);
@@ -405,9 +405,20 @@ async function runSshCheckAndUpdate(device) {
 }
 
 app.post("/devices", requireAuth, async (req, res) => {
-  const tenantId =
+  let tenantId =
     req.user.tenantId ||
-    (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
+    null;
+  if (!tenantId && req.user.role === 'admin' && req.body?.tenantId) {
+    const tid = Number(req.body.tenantId);
+    if (Number.isFinite(tid)) {
+      const exists = await prisma.tenant.findUnique({ where: { id: tid } });
+      if (!exists) return res.status(400).json({ error: "Tenant informado não existe" });
+      tenantId = tid;
+    }
+  }
+  if (!tenantId) {
+    tenantId = (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
+  }
 
   const {
     name,
@@ -1124,8 +1135,14 @@ app.get('/bgp/peers', requireAuth, async (req, res) => {
       if (Number.isFinite(tid)) where = { tenantId: tid };
     }
     const rows = await prisma.discoveredBgpPeer.findMany({ where, orderBy: [{ deviceName: 'asc' }, { ipPeer: 'asc' }] });
+    const uniqAsn = Array.from(new Set(rows.map((r) => Number(r.asn || 0)).filter((n) => Number.isFinite(n) && n > 0)));
+    const reg = uniqAsn.length
+      ? await prisma.asnRegistry.findMany({ where: { asn: { in: uniqAsn } } })
+      : [];
+    const regMap = new Map(reg.map((r) => [Number(r.asn), r.name || null]));
     res.json(rows.map((r) => {
-      const effName = r.asnName || r.name || (r.asn ? `AS${r.asn}` : null);
+      const regName = regMap.get(Number(r.asn)) || null;
+      const effName = regName || r.asnName || r.name || (r.asn ? `AS${r.asn}` : null);
       return { id: r.id, tenantId: r.tenantId, deviceId: r.deviceId, deviceName: r.deviceName, ip: r.ipPeer, asn: r.asn, localAsn: r.localAsn || null, name: effName, vrfName: r.vrfName || null };
     }));
   } catch (e) {
@@ -1156,10 +1173,10 @@ app.post('/asn-registry', requireAuth, requireAdmin, async (req, res) => {
 
 app.post('/asn-registry/reprocess', requireAuth, requireAdmin, async (_req, res) => {
   try {
-    const result = await refreshAsnRegistryFromPeers();
-    res.json({ diff: result.diff });
+    await refreshAsnRegistryFromPeers();
+    res.json({ ok: true });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err?.message || String(err) });
   }
 });
 
@@ -1313,12 +1330,17 @@ app.post("/netbox/catalog", requireAuth, async (req, res) => {
 // Stats overview (contadores para Dashboard)
 app.get("/stats/overview", requireAuth, async (req, res) => {
   try {
-    const whereTenant = req.user.tenantId ? { tenantId: req.user.tenantId } : {};
+    let effectiveTenantId = req.user.tenantId || null;
+    if (!effectiveTenantId && req.user.role === 'admin' && req.query.tenantId) {
+      const tid = Number(req.query.tenantId);
+      if (Number.isFinite(tid)) effectiveTenantId = tid;
+    }
+    const whereTenant = effectiveTenantId ? { tenantId: effectiveTenantId } : {};
     const GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
     const [activeDevices, discoveredPeers, tenants] = await Promise.all([
       prisma.device.count({ where: { ...whereTenant, status: "active" } }),
       prisma.discoveredBgpPeer.count({ where: whereTenant }),
-      prisma.tenant.count({ where: { ...(req.user.tenantId ? { id: req.user.tenantId } : {}), tenantGroup: GROUP_FILTER } }),
+      prisma.tenant.count({ where: { ...(effectiveTenantId ? { id: effectiveTenantId } : {}), tenantGroup: GROUP_FILTER } }),
     ]);
     res.json({ activeDevices, discoveredPeers, tenants });
   } catch (e) {

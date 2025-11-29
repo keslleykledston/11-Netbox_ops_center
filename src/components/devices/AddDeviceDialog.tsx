@@ -32,6 +32,7 @@ import { Switch } from "@/components/ui/switch";
 import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useDevices } from "@/hooks/use-mobile";
+import { useTenantContext } from "@/contexts/TenantContext";
 
 const deviceFormSchema = z.object({
   name: z.string()
@@ -97,6 +98,7 @@ const manufacturers = [
 const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { createDevice } = useDevices();
+  const { selectedTenantId } = useTenantContext();
 
   const form = useForm<DeviceFormValues>({
     resolver: zodResolver(deviceFormSchema),
@@ -121,7 +123,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
     setIsSubmitting(true);
     try {
       const newDevice = {
-        tenantId: "default-tenant",
+        tenantId: selectedTenantId || undefined,
         name: data.name,
         hostname: data.name,
         ipAddress: data.ip,

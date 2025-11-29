@@ -8,7 +8,6 @@ import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import Devices from "./pages/Devices";
 import BgpPeers from "./pages/BgpPeers";
-import Configurations from "./pages/Configurations";
 import Applications from "./pages/Applications";
 import Backup from "./pages/Backup";
 import Maintenance from "./pages/Maintenance";
@@ -17,6 +16,7 @@ import UserProfile from "./pages/UserProfile";
 import NotFound from "./pages/NotFound";
 import { getToken } from "@/lib/api";
 import RemoteAccess from "./modules/access/RemoteAccess";
+import { TenantProvider } from "@/contexts/TenantContext";
 
 const queryClient = new QueryClient();
 
@@ -31,25 +31,26 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
-          <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
-          <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
-          <Route path="/configurations" element={<RequireAuth><Configurations /></RequireAuth>} />
-          <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
-          <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
-          <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
-          <Route path="/access/terminal" element={<RequireAuth><RemoteAccess /></RequireAuth>} />
-          <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
-          <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
+      <TenantProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
+            <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
+            <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
+            <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
+            <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
+            <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
+            <Route path="/access/terminal" element={<RequireAuth><RemoteAccess /></RequireAuth>} />
+            <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
+            <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </BrowserRouter>
+      </TenantProvider>
     </TooltipProvider>
   </QueryClientProvider>
 );

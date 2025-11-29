@@ -3,6 +3,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Server, GitBranch, Users, AlertCircle, Cpu, HardDrive } from "lucide-react";
 import { api } from "@/lib/api";
+import { useTenantContext } from "@/contexts/TenantContext";
 
 type HostStats = {
   cpu: { percent: number; load1m: number; cores: number };
@@ -14,10 +15,12 @@ const Dashboard = () => {
   const [discoveredPeers, setDiscoveredPeers] = useState<number>(0);
   const [tenants, setTenants] = useState<number>(0);
   const [hostStats, setHostStats] = useState<HostStats | null>(null);
+  const { selectedTenantId, loading: tenantLoading } = useTenantContext();
 
   useEffect(() => {
     let isMounted = true;
-    api.getStatsOverview()
+    if (tenantLoading) return;
+    api.getStatsOverview(selectedTenantId || undefined)
       .then((res: any) => {
         if (!isMounted) return;
         setActiveDevices(Number(res?.activeDevices || 0));
@@ -28,7 +31,7 @@ const Dashboard = () => {
         // silencioso: mantém zeros caso erro/401
       });
     return () => { isMounted = false; };
-  }, []);
+  }, [selectedTenantId, tenantLoading]);
 
   useEffect(() => {
     let isMounted = true;

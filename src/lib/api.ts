@@ -168,8 +168,9 @@ export const api = {
   async jumpserverConnect(deviceId: string | number) {
     return apiFetch(`/jumpserver/connect/${deviceId}`, { method: "POST" });
   },
-  async getStatsOverview() {
-    return apiFetch(`/stats/overview`, { method: "GET" });
+  async getStatsOverview(tenantId?: string | number) {
+    const qs = tenantId ? `?tenantId=${tenantId}` : "";
+    return apiFetch(`/stats/overview${qs}`, { method: "GET" });
   },
   async adminSummary() {
     return apiFetch(`/admin/summary`, { method: "GET" });
@@ -225,8 +226,9 @@ export const api = {
   async getDefaultAdminHint() {
     return apiFetch(`/auth/default-admin-hint`, { method: 'GET' });
   },
-  async listBackupDevices() {
-    return apiFetch(`/backup/devices`, { method: 'GET' });
+  async listBackupDevices(tenantId?: string | number) {
+    const qs = tenantId ? `?tenantId=${tenantId}` : '';
+    return apiFetch(`/backup/devices${qs}`, { method: 'GET' });
   },
   async updateBackupDevice(id: number | string, payload: { enabled?: boolean; sshPort?: number | null }) {
     return apiFetch(`/backup/devices/${id}`, { method: 'PATCH', body: JSON.stringify(payload) });

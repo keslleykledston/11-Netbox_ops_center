@@ -11,6 +11,7 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 import { db } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { waitForJobCompletion } from "@/queues/job-client";
+import { useTenantContext } from "@/contexts/TenantContext";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -85,11 +86,10 @@ const BgpPeers = () => {
   };
 
   const { toast } = useToast();
-  const { devices } = useDevices();
+  const { tenants, selectedTenantId, setSelectedTenantId, loading: tenantLoading } = useTenantContext();
+  const { devices } = useDevices(selectedTenantId || undefined);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
   const [peersJson, setPeersJson] = useState<string>("{}");
-  const [tenants, setTenants] = useState<Array<{ id: number; name: string }>>([]);
-  const [selectedTenantId, setSelectedTenantId] = useState<string | undefined>(undefined);
   const [dbPeers, setDbPeers] = useState<Array<{ id: number; deviceName: string; ip: string; asn: number; localAsn?: number; name?: string; vrfName?: string }>>([]);
   const [showIbgp, setShowIbgp] = useState<boolean>(false);
   const [enrichingAsns, setEnrichingAsns] = useState<boolean>(false);
@@ -114,17 +114,15 @@ const BgpPeers = () => {
   }, [selectedTenantId]);
 
   useEffect(() => {
-    // Carrega tenants
-    api.listTenants().then((list: any[]) => {
-      const mapped = (list || []).map((t: any) => ({ id: Number(t.id), name: String(t.name) }));
-      setTenants(mapped);
-      if (!selectedTenantId && mapped.length > 0) setSelectedTenantId(String(mapped[0].id));
-    }).catch(() => setTenants([]));
-  }, []);
+    if (!tenantLoading && !selectedTenantId && tenants[0]) {
+      setSelectedTenantId(String(tenants[0].id));
+    }
+  }, [tenantLoading, selectedTenantId, tenants, setSelectedTenantId]);
 
   useEffect(() => {
+    if (tenantLoading) return;
     refreshDbPeers();
-  }, [refreshDbPeers]);
+  }, [refreshDbPeers, tenantLoading, selectedTenantId]);
   const parsePeersRows = () => {
     try {
       const data = JSON.parse(peersJson || "{}") as Record<string, Array<{ asn: string; ip_peer: string; name: string; type: number; vrf_name: string }>>;
@@ -261,7 +259,7 @@ const BgpPeers = () => {
           </CardHeader>
           <CardContent>
             <div className="w-[280px]">
-              <Select value={selectedTenantId} onValueChange={(v) => setSelectedTenantId(v)}>
+              <Select value={selectedTenantId || ""} onValueChange={(v) => setSelectedTenantId(v)} disabled={tenantLoading || tenants.length === 0}>
                 <SelectTrigger>
                   <SelectValue placeholder="Selecione o Tenant" />
                 </SelectTrigger>

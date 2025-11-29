@@ -2,6 +2,7 @@ import * as React from "react";
 import { useState, useEffect, useCallback } from 'react';
 import { db, Tenant, Client, User, Device, Application } from '@/lib/utils';
 import { api } from '@/lib/api';
+import { useTenantContext } from "@/contexts/TenantContext";
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -96,19 +97,21 @@ export function useTenants() {
 // Hook para Devices
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
-export function useDevices(tenantId?: string) {
+export function useDevices(tenantId?: string, skipInitialLoad = false) {
   const [devices, setDevices] = useState<Device[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { selectedTenantId: globalTenantId } = useTenantContext();
+  const effectiveTenantId = tenantId ?? globalTenantId ?? undefined;
 
   const refreshDevices = useCallback(async () => {
     try {
       setLoading(true);
       if (API_MODE) {
-        const list = await api.listDevices(tenantId);
+        const list = await api.listDevices(effectiveTenantId);
         setDevices(list as unknown as Device[]);
       } else {
-        const data = db.getDevices(tenantId);
+        const data = db.getDevices(effectiveTenantId);
         setDevices(data);
       }
       setError(null);
@@ -118,18 +121,21 @@ export function useDevices(tenantId?: string) {
     } finally {
       setLoading(false);
     }
-  }, [tenantId]);
+  }, [effectiveTenantId]);
 
   useEffect(() => {
-    refreshDevices();
-  }, [refreshDevices]);
+    if (!skipInitialLoad) {
+      refreshDevices();
+    }
+  }, [refreshDevices, skipInitialLoad]);
 
   const createDevice = useCallback(async (device: Omit<Device, 'id' | 'createdAt' | 'updatedAt'>) => {
     try {
+      const targetTenant = (device as any).tenantId ?? effectiveTenantId;
       if (API_MODE) {
         const created = await api.createDevice({
           ...device,
-          tenantId: device.tenantId,
+          tenantId: targetTenant ? Number(targetTenant) : undefined,
         });
         await refreshDevices();
         return created as unknown as Device;
@@ -141,7 +147,7 @@ export function useDevices(tenantId?: string) {
       setError('Erro ao criar dispositivo');
       throw err;
     }
-  }, [refreshDevices]);
+  }, [refreshDevices, effectiveTenantId]);
 
   const updateDevice = useCallback(async (id: string, updates: Partial<Omit<Device, 'id' | 'createdAt'>>) => {
     try {

@@ -13,6 +13,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+import { useTenantContext } from "@/contexts/TenantContext";
 
 interface BackupDevice {
   id: number;
@@ -85,11 +86,12 @@ export default function Backup() {
   const [searchTerm, setSearchTerm] = useState('');
 
   const { toast } = useToast();
+  const { selectedTenantId, loading: tenantLoading } = useTenantContext();
 
   const loadData = async () => {
     try {
       setLoading(true);
-      const resp = await api.listBackupDevices() as BackupApiResponse;
+      const resp = await api.listBackupDevices(selectedTenantId || undefined) as BackupApiResponse;
       setDevices(resp.items || []);
       setIntegration(resp.oxidized || { available: true, message: null });
       setRouterDbInfo(resp.routerDb || { writable: true, error: null });
@@ -107,9 +109,9 @@ export default function Backup() {
   };
 
   useEffect(() => {
+    if (tenantLoading) return;
     loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [selectedTenantId, tenantLoading]);
 
   const loadVersions = async (id: number, device?: BackupDevice | null) => {
     try {

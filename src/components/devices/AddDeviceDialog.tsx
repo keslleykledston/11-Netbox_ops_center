@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -33,6 +33,7 @@ import { Loader2, Save } from "lucide-react";
 import { toast } from "sonner";
 import { useDevices } from "@/hooks/use-mobile";
 import { useTenantContext } from "@/contexts/TenantContext";
+import { api } from "@/lib/api";
 
 const deviceFormSchema = z.object({
   name: z.string()
@@ -74,6 +75,7 @@ const deviceFormSchema = z.object({
   isActive: z.boolean().default(true),
   backupEnabled: z.boolean().default(false),
   monitoringEnabled: z.boolean().default(false),
+  oxidizedProxyId: z.string().optional(),
 });
 
 type DeviceFormValues = z.infer<typeof deviceFormSchema>;
@@ -97,6 +99,7 @@ const manufacturers = [
 
 const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [proxies, setProxies] = useState<Array<{ id: number; name: string }>>([]);
   const { createDevice } = useDevices();
   const { selectedTenantId } = useTenantContext();
 
@@ -116,8 +119,18 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
       isActive: true,
       backupEnabled: false,
       monitoringEnabled: false,
+      oxidizedProxyId: "",
     },
   });
+
+  useEffect(() => {
+    if (open) {
+      // Fetch proxies when dialog opens
+      api.listOxidizedProxies()
+        .then((data) => setProxies(data || []))
+        .catch(() => setProxies([]));
+    }
+  }, [open]);
 
   const onSubmit = async (data: DeviceFormValues) => {
     setIsSubmitting(true);
@@ -141,6 +154,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
         sshPort: parseInt(data.sshPort, 10),
         backupEnabled: data.backupEnabled,
         monitoringEnabled: data.monitoringEnabled,
+        oxidizedProxyId: data.oxidizedProxyId ? parseInt(data.oxidizedProxyId, 10) : undefined,
       };
 
       const success = await createDevice(newDevice);
@@ -313,6 +327,36 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
                 )}
               />
             </div>
+
+            {/* Oxidized Proxy Selection */}
+            <FormField
+              control={form.control}
+              name="oxidizedProxyId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Oxidized Proxy (Opcional)</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="bg-zinc-800 text-white border-zinc-700">
+                        <SelectValue placeholder="Proxy padrão (central)" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="">Proxy padrão (central)</SelectItem>
+                      {proxies.map((proxy) => (
+                        <SelectItem key={proxy.id} value={String(proxy.id)}>
+                          {proxy.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Selecione um proxy remoto para este dispositivo ou deixe em branco para usar o proxy central
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
             {/* Credenciais de Acesso */}
             <div className="space-y-4">

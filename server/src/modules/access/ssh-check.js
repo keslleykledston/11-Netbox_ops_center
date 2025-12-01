@@ -7,17 +7,16 @@ import { decryptSecret } from '../../cred.js';
  * @param {object} device - The device object from Prisma.
  * @returns {Promise<{ok: boolean, status: string, error?: string}>}
  */
-export function checkDeviceSsh(device) {
+/**
+ * Raw SSH connection check.
+ * @param {string} host
+ * @param {number} port
+ * @param {string} username
+ * @param {string} password
+ * @returns {Promise<{ok: boolean, status: string, error?: string}>}
+ */
+export function checkSshConnection(host, port, username, password) {
     return new Promise((resolve) => {
-        if (!device.credUsername || !device.credPasswordEnc) {
-            return resolve({ ok: false, status: 'auth_error', error: 'Missing credentials' });
-        }
-
-        const password = decryptSecret(device.credPasswordEnc);
-        if (!password) {
-            return resolve({ ok: false, status: 'auth_error', error: 'Failed to decrypt password' });
-        }
-
         const conn = new SshClient();
         let resolved = false;
 
@@ -43,10 +42,10 @@ export function checkDeviceSsh(device) {
 
         try {
             conn.connect({
-                host: device.ipAddress,
-                port: device.sshPort || 22,
-                username: device.credUsername,
-                password: password,
+                host,
+                port: port || 22,
+                username,
+                password,
                 readyTimeout: 10000, // 10s timeout
                 keepaliveInterval: 0,
                 algorithms: {
@@ -81,4 +80,22 @@ export function checkDeviceSsh(device) {
             done({ ok: false, status: 'error', error: e.message });
         }
     });
+}
+
+/**
+ * Checks SSH connectivity for a device.
+ * @param {object} device - The device object from Prisma.
+ * @returns {Promise<{ok: boolean, status: string, error?: string}>}
+ */
+export function checkDeviceSsh(device) {
+    if (!device.credUsername || !device.credPasswordEnc) {
+        return Promise.resolve({ ok: false, status: 'auth_error', error: 'Missing credentials' });
+    }
+
+    const password = decryptSecret(device.credPasswordEnc);
+    if (!password) {
+        return Promise.resolve({ ok: false, status: 'auth_error', error: 'Failed to decrypt password' });
+    }
+
+    return checkSshConnection(device.ipAddress, device.sshPort, device.credUsername, password);
 }

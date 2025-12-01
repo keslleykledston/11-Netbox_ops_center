@@ -10,11 +10,13 @@ export default function IdleSessionManager() {
   const idleTimer = useRef<number | null>(null);
   const warningTimer = useRef<number | null>(null);
   const countdownTimer = useRef<number | null>(null);
+  const warningDeadline = useRef<number | null>(null);
 
   const clearTimers = () => {
     if (idleTimer.current) { window.clearTimeout(idleTimer.current); idleTimer.current = null; }
     if (warningTimer.current) { window.clearTimeout(warningTimer.current); warningTimer.current = null; }
     if (countdownTimer.current) { window.clearInterval(countdownTimer.current); countdownTimer.current = null; }
+    warningDeadline.current = null;
   };
 
   const scheduleIdle = () => {
@@ -23,8 +25,11 @@ export default function IdleSessionManager() {
       // Trigger warning phase
       setWarning(true);
       setRemaining(Math.floor(WARNING_MS / 1000));
+      warningDeadline.current = Date.now() + WARNING_MS;
       countdownTimer.current = window.setInterval(() => {
-        setRemaining((r) => (r > 0 ? r - 1 : 0));
+          if (!warningDeadline.current) return;
+          const diff = Math.max(0, warningDeadline.current - Date.now());
+          setRemaining(Math.ceil(diff / 1000));
       }, 1000);
       warningTimer.current = window.setTimeout(() => doLogout(), WARNING_MS);
     }, IDLE_TIMEOUT_MS);
@@ -72,4 +77,3 @@ export default function IdleSessionManager() {
     </div>
   );
 }
-

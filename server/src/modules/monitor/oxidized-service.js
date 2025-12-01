@@ -9,6 +9,8 @@ const BASE_URL = (process.env.OXIDIZED_API_URL || 'http://oxidized:8888').replac
 const ROUTER_DB_PATH = process.env.OXIDIZED_ROUTER_DB || '/etc/oxidized/router.db';
 const CONFIG_DIR = path.dirname(ROUTER_DB_PATH);
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config');
+const GIT_REPO_PATH = path.join(CONFIG_DIR, 'git-repos/default.git');
+const GIT_REPOS_BASE = path.join(CONFIG_DIR, 'git-repos');
 
 const MANAGED_BEGIN = '# BEGIN NETBOX_OPS_CENTER';
 const MANAGED_END = '# END NETBOX_OPS_CENTER';
@@ -46,6 +48,90 @@ function buildRouterEntry(device) {
     const model = sanitizeField(guessModel(device));
     const input = 'ssh';
     return `${name}:${ip}:${model}:${input}:${login}:${pass}:${sshPort}`;
+}
+
+function normalizeNodeName(name) {
+    return String(name || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[\\s:]+/g, '_');
+}
+
+function buildNodeNameCandidates(node) {
+    const raw = String(node || '').trim();
+    const candidates = new Set();
+    const add = (n) => {
+        const val = String(n || '').trim();
+        if (val) candidates.add(val);
+    };
+    add(raw);
+    add(raw.replace(/[:]/g, '_'));
+    add(raw.replace(/[:]/g, ' '));
+    add(raw.replace(/[\\s:]+/g, '_'));
+    add(raw.replace(/[\\s:]+/g, '-'));
+    return Array.from(candidates.values());
+}
+
+async function listRepoDirs() {
+    try {
+        const entries = await fs.readdir(GIT_REPOS_BASE, { withFileTypes: true });
+        const dirs = entries.filter((e) => e.isDirectory() && e.name.endsWith('.git')).map((e) => path.join(GIT_REPOS_BASE, e.name));
+        if (dirs.length === 0) dirs.push(GIT_REPO_PATH);
+        return dirs;
+    } catch {
+        return [GIT_REPO_PATH];
+    }
+}
+
+async function listNodePaths(node, repoPath = GIT_REPO_PATH) {
+    const normTarget = normalizeNodeName(node);
+    if (!normTarget) return [];
+    try {
+        const { stdout } = await execAsync(`git --git-dir=${JSON.stringify(repoPath)} ls-tree -r --name-only HEAD`);
+        const paths = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+        return paths.filter((p) => {
+            const base = p.split('/').pop() || '';
+            return normalizeNodeName(base) === normTarget;
+        });
+    } catch (err) {
+        console.warn('[OXIDIZED] Falha ao listar caminhos do git:', err?.message || err);
+        return [];
+    }
+}
+
+async function resolveNodePathInGit(repoPath, oid, node) {
+    const options = buildNodeNameCandidates(node);
+    for (const candidate of options) {
+        try {
+            await execAsync(`git --git-dir=${JSON.stringify(repoPath)} cat-file -e ${JSON.stringify(`${oid}:${candidate}`)}`);
+            return { ok: true, path: candidate };
+        } catch {
+            // try next candidate
+        }
+    }
+    // Fallback: procurar pelo basename na árvore (suporta caminhos com diretório de grupo)
+    const targetNorm = normalizeNodeName(node);
+    if (targetNorm) {
+        try {
+            const { stdout } = await execAsync(`git --git-dir=${JSON.stringify(repoPath)} ls-tree -r --name-only HEAD`);
+            const paths = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+            for (const p of paths) {
+                const base = p.split('/').pop() || '';
+                if (normalizeNodeName(base) === targetNorm) {
+                    try {
+                        await execAsync(`git --git-dir=${JSON.stringify(repoPath)} cat-file -e ${JSON.stringify(`${oid}:${p}`)}`);
+                        return { ok: true, path: p };
+                    } catch {
+                        continue;
+                    }
+                }
+            }
+        } catch (err) {
+            console.warn('[OXIDIZED] Falha ao listar árvore do git:', err?.message || err);
+        }
+    }
+
+    return { ok: false, tried: options };
 }
 
 export async function ensureOxidizedConfig(force = false) {
@@ -277,17 +363,94 @@ export async function fetchOxidizedVersions(nodeFull) {
     return { ok: true, versions: Array.isArray(result.data) ? result.data : [] };
 }
 
+export async function getLatestOxidizedVersionTimes(names = []) {
+    const versions = new Map();
+    const uniqueNames = Array.from(new Set((names || []).filter(Boolean)));
+    if (uniqueNames.length === 0) return { ok: true, versions };
+
+    try {
+        const repos = await listRepoDirs();
+        for (const repoPath of repos) {
+            // Mapear nomes para caminhos reais (quando há diretório de grupo)
+            const resolvedPaths = new Map();
+            const nameLookup = new Map();
+            try {
+                const { stdout: lsTree } = await execAsync(`git --git-dir=${JSON.stringify(repoPath)} ls-tree -r --name-only HEAD`);
+                const treePaths = lsTree.split('\n').map((l) => l.trim()).filter(Boolean);
+                const normalizedTree = new Map();
+                for (const p of treePaths) {
+                    const base = p.split('/').pop() || '';
+                    const norm = normalizeNodeName(base);
+                    if (!normalizedTree.has(norm)) normalizedTree.set(norm, p);
+                }
+                for (const name of uniqueNames) {
+                    const norm = normalizeNodeName(name);
+                    if (normalizedTree.has(norm)) {
+                        resolvedPaths.set(name, normalizedTree.get(norm));
+                    }
+                }
+            } catch (err) {
+                console.warn('[OXIDIZED] Falha ao mapear caminhos do git:', err?.message || err);
+            }
+
+            const pathsToQuery = uniqueNames.map((n) => resolvedPaths.get(n) || n);
+
+            pathsToQuery.forEach((p, idx) => {
+                nameLookup.set(p, uniqueNames[idx]);
+                const base = p.split('/').pop() || p;
+                nameLookup.set(base, uniqueNames[idx]);
+            });
+
+            const namesArg = pathsToQuery.map((n) => JSON.stringify(n)).join(' ');
+            const cmd = `git --git-dir=${JSON.stringify(repoPath)} log --format=%cI --name-only -- ${namesArg}`;
+            const { stdout } = await execAsync(cmd);
+            const lines = stdout.split('\n');
+            let currentTime = null;
+
+            for (const rawLine of lines) {
+                const line = rawLine.trim();
+                if (!line) {
+                    currentTime = null;
+                    continue;
+                }
+                if (/^\\d{4}-\\d{2}-\\d{2}T/.test(line)) {
+                    currentTime = line;
+                    continue;
+                }
+                const deviceName = nameLookup.get(line) || nameLookup.get(line.split('/').pop() || '');
+                if (currentTime && deviceName && !versions.has(deviceName)) {
+                    versions.set(deviceName, currentTime);
+                    if (versions.size === uniqueNames.length) break;
+                }
+            }
+            if (versions.size === uniqueNames.length) break;
+        }
+
+        return { ok: true, versions };
+    } catch (err) {
+        console.warn('[OXIDIZED] Falha ao calcular última versão:', err?.message || err);
+        return { ok: false, error: err?.message || String(err), versions };
+    }
+}
+
 export async function getOxidizedDiff(node, oid1, oid2) {
-    const repoPath = path.join(path.dirname(ROUTER_DB_PATH), 'git-repos/default.git');
     try {
         // Verify repo exists
-        await fs.access(repoPath);
+        await fs.access(GIT_REPO_PATH);
 
-        // Use git diff to get the patch
-        // We use --no-color to get raw text, but we could use --color=always if we want ANSI codes
-        const cmd = `git --git-dir="${repoPath}" diff "${oid1}" "${oid2}" -- "${node}"`;
-        const { stdout } = await execAsync(cmd);
-        return { ok: true, diff: stdout };
+        const repos = await listRepoDirs();
+        for (const repoPath of repos) {
+            const candidates = await listNodePaths(node, repoPath);
+            const resolved = await resolveNodePathInGit(repoPath, oid1, node);
+            const fallback = resolved.ok ? resolved.path : (candidates[0] || null);
+            if (!fallback) continue;
+
+            const cmd = `git --git-dir="${repoPath}" diff "${oid1}" "${oid2}" -- "${fallback}"`;
+            const { stdout } = await execAsync(cmd);
+            return { ok: true, diff: stdout, path: fallback, paths: candidates, repo: repoPath };
+        }
+
+        return { ok: false, error: 'Arquivo não encontrado no repositório para o node informado', paths: [], repo: null };
     } catch (err) {
         console.error('[OXIDIZED] Diff error:', err);
         return { ok: false, error: err.message || String(err) };
@@ -295,15 +458,23 @@ export async function getOxidizedDiff(node, oid1, oid2) {
 }
 
 export async function getOxidizedContent(node, oid) {
-    const repoPath = path.join(path.dirname(ROUTER_DB_PATH), 'git-repos/default.git');
     try {
-        await fs.access(repoPath);
-        // git show <oid>:<node>
-        // Note: The file path in the repo is usually just the node name, but we verified it with ls-tree earlier.
-        // It was "INFORR-BVB-JCL-RX" (no directory).
-        const cmd = `git --git-dir="${repoPath}" show "${oid}:${node}"`;
-        const { stdout } = await execAsync(cmd);
-        return { ok: true, content: stdout };
+        await fs.access(GIT_REPO_PATH);
+        const repos = await listRepoDirs();
+        for (const repoPath of repos) {
+            const candidates = await listNodePaths(node, repoPath);
+            const resolved = await resolveNodePathInGit(repoPath, oid, node);
+            const target = resolved.ok ? resolved.path : (candidates[0] || node);
+            try {
+                const cmd = `git --git-dir="${repoPath}" show "${oid}:${target}"`;
+                const { stdout } = await execAsync(cmd);
+                return { ok: true, content: stdout, path: target, paths: candidates, repo: repoPath };
+            } catch {
+                // try next repo
+                continue;
+            }
+        }
+        return { ok: false, error: 'Arquivo não encontrado no repositório para o node informado', path: null, paths: [], repo: null };
     } catch (err) {
         console.error('[OXIDIZED] Content error:', err);
         return { ok: false, error: err.message || String(err) };

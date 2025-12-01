@@ -17,88 +17,15 @@ export async function fetchList(url, token) {
 
 import { encryptSecret } from "./cred.js";
 import { getOxidizedModel } from "./modules/monitor/vendor-map.js";
+import { getDeviceSecrets } from "./netboxSecrets.js";
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Cache session key to avoid fetching it for every device
-let cachedSessionKey = null;
-let sessionKeyFailed = false;
-
-async function getSessionKey(url, token) {
-  if (cachedSessionKey) return cachedSessionKey;
-  if (sessionKeyFailed) return null;
-
-  try {
-    const keyPath = path.join(__dirname, '../netbox_private_key.pem');
-    if (!fs.existsSync(keyPath)) {
-      sessionKeyFailed = true;
-      return null;
-    }
-
-    const privateKey = fs.readFileSync(keyPath, 'utf8');
-    // Ensure newline at end
-    const pk = privateKey.endsWith('\n') ? privateKey : privateKey + '\n';
-
-    const res = await fetch(`${url}/api/plugins/secrets/get-session-key/`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Token ${token}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify({ private_key: pk })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      cachedSessionKey = data.session_key;
-      return cachedSessionKey;
-    } else {
-      console.warn('[SECRETS] Failed to get session key:', res.status);
-      sessionKeyFailed = true;
-    }
-  } catch (e) {
-    console.warn('[SECRETS] Error getting session key:', e.message);
-    sessionKeyFailed = true;
-  }
-  return null;
-}
-
-async function fetchDeviceSecrets(url, token, deviceId) {
-  try {
-    const sessionKey = await getSessionKey(url, token);
-    if (!sessionKey) return null;
-
-    const res = await fetch(`${url}/api/plugins/secrets/secrets/?assigned_object_id=${deviceId}`, {
-      headers: {
-        'Authorization': `Token ${token}`,
-        'Accept': 'application/json',
-        'X-Session-Key': sessionKey
-      }
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        // Find a secret that looks like a password or username
-        // Heuristic: look for 'password', 'senha', or use the first one available
-        const passwordSecret = data.results.find(s => s.name.toLowerCase().includes('password') || s.name.toLowerCase().includes('senha')) || data.results[0];
-        const usernameSecret = data.results.find(s => s.name.toLowerCase().includes('username') || s.name.toLowerCase().includes('user') || s.name.toLowerCase().includes('login'));
-
-        return {
-          username: usernameSecret?.plaintext || null,
-          password: passwordSecret?.plaintext || null
-        };
-      }
-    }
-  } catch (e) {
-    console.warn(`[SECRETS] Error fetching secrets for device ${deviceId}:`, e.message);
-  }
-  return null;
-}
+// Removed legacy fetchDeviceSecrets and getSessionKey as they are now handled by netboxClient/netboxSecrets
+// Helper to fetch config context if needed
 
 // Helper to fetch config context if needed
 async function fetchConfigContext(url, token, deviceId) {
@@ -107,6 +34,64 @@ async function fetchConfigContext(url, token, deviceId) {
     if (res.ok) return await res.json();
   } catch { }
   return null;
+}
+
+// Helper to fetch ALL services (SSH/Telnet ports) from NetBox with pagination
+async function fetchAllServices(url, token) {
+  const servicesMap = new Map(); // deviceId -> { sshPort, telnetPort }
+  let nextUrl = `${url}/api/ipam/services/?limit=1000`;
+
+  try {
+    while (nextUrl) {
+      const res = await fetch(nextUrl, { headers: authHeaders(token) });
+      if (!res.ok) break;
+
+      const data = await res.json();
+      nextUrl = data.next;
+
+      // Fix mixed content issue: if original URL is https, ensure nextUrl is also https
+      if (nextUrl && url.startsWith('https://') && nextUrl.startsWith('http://')) {
+        nextUrl = nextUrl.replace('http://', 'https://');
+      }
+
+      if (data.results) {
+        for (const service of data.results) {
+          if (!service.device?.id) continue;
+
+          const deviceId = service.device.id;
+
+          const ports = service.ports || [];
+          const protocol = service.protocol?.value?.toLowerCase() || '';
+          const serviceName = (service.name || '').toLowerCase();
+
+          let sshPort = null;
+          let telnetPort = null;
+
+          for (const port of ports) {
+            if (port === 22 || (serviceName.includes('ssh') && protocol === 'tcp')) {
+              sshPort = port;
+            }
+            if (port === 23 || (serviceName.includes('telnet') && protocol === 'tcp')) {
+              telnetPort = port;
+            }
+          }
+
+          if (sshPort || telnetPort) {
+            // If we already have an entry, merge it (e.g. multiple services per device)
+            const existing = servicesMap.get(deviceId) || { sshPort: null, telnetPort: null };
+            if (sshPort) existing.sshPort = sshPort;
+            if (telnetPort) existing.telnetPort = telnetPort;
+            servicesMap.set(deviceId, existing);
+          }
+        }
+      }
+    }
+    console.log(`[SERVICES] Fetched services for ${servicesMap.size} devices.`);
+    return servicesMap;
+  } catch (e) {
+    console.warn(`[SERVICES] Error fetching all services:`, e.message);
+  }
+  return new Map();
 }
 
 export async function syncFromNetbox(prisma, { url, token, resources = ["tenants", "devices"], tenantScopeId, deviceFilters, defaultCredentials = {} }) {
@@ -142,6 +127,9 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
   }
 
   if (resources.includes("devices")) {
+    // Fetch all services upfront
+    const servicesMap = await fetchAllServices(url, token);
+
     const devices = await fetchList(`${url}/api/dcim/devices/?limit=1000`, token);
     for (const d of devices) {
       const tenantName = d.tenant?.name || "NetBox";
@@ -213,18 +201,34 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         }
       }
 
-      // Try fetching from Secrets Plugin (if key is available)
+      // Try fetching from Secrets Plugin (using new module)
       if ((!credUsername || !credPassword) && d.id) {
-        const secrets = await fetchDeviceSecrets(url, token, d.id);
+        const secrets = await getDeviceSecrets(d.id, { url, token });
         if (secrets) {
           if (!credUsername && secrets.username) credUsername = secrets.username;
           if (!credPassword && secrets.password) credPassword = secrets.password;
+          // Also update SSH port if found in secrets and not yet set
+          if (!sshPort && secrets.sshPort) sshPort = secrets.sshPort;
         }
       }
 
       // Fallback to Default Credentials (from Application config)
       if (!credUsername && defaultCredentials.username) credUsername = defaultCredentials.username;
       if (!credPassword && defaultCredentials.password) credPassword = defaultCredentials.password;
+
+      // Fetch Services (SSH/Telnet ports) from Map
+      let sshPort = null;
+      if (d.id) {
+        const services = servicesMap.get(d.id);
+        if (services?.sshPort) {
+          sshPort = services.sshPort;
+        }
+      }
+
+      // Fallback to Custom Fields if Services didn't have SSH port
+      if (!sshPort) {
+        sshPort = Number(cf["ssh_port"] || cf["SSH Port"] || 22);
+      }
 
       // Determine Oxidized Model (Platform/Driver)
       const oxidizedModel = getOxidizedModel(d);
@@ -245,6 +249,7 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         isProduction,
         jumpserverId,
         customData: JSON.stringify(cf),
+        sshPort, // Use the port extracted from Services or Custom Fields
       };
 
       // Only update credentials if found in NetBox, otherwise keep existing
@@ -253,12 +258,6 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         updateData.credPasswordEnc = encryptSecret(credPassword);
         updateData.credUpdatedAt = new Date();
       }
-
-      // SSH Port
-      // Assuming it might be in custom fields or standard port
-      // NetBox doesn't have a standard ssh_port field on Device, so checking custom fields
-      const sshPort = Number(cf["ssh_port"] || cf["SSH Port"] || 22);
-      if (sshPort) updateData.sshPort = sshPort;
 
       const existing = await prisma.device.findFirst({
         where: { name, tenantId: tenant.id },

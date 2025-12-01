@@ -7,7 +7,7 @@ import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { AlertTriangle, HardDrive, Loader2, RefreshCw, ShieldCheck, XCircle, History, GitCompare, FileDiff, Eye, Search } from "lucide-react";
+import { AlertTriangle, HardDrive, Loader2, RefreshCw, ShieldCheck, XCircle, History, GitCompare, FileDiff, Eye, Search, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, DropdownMenuCheckboxItem } from "@/components/ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
@@ -29,6 +29,7 @@ interface BackupDevice {
     present: boolean;
     status: string;
     lastRun: string | null;
+    lastVersion?: string | null;
   };
   managed: boolean;
 }
@@ -47,6 +48,17 @@ interface OxidizedVersion {
   oid?: string;
 }
 
+interface BackupLog {
+  id?: number;
+  timestamp: string;
+  event: string;
+  device: string;
+  status: string;
+  message?: string;
+  proxyName?: string;
+  hasChanges?: boolean;
+}
+
 const statusBadge = (status?: string) => {
   const normalized = (status || '').toLowerCase();
   if (normalized === 'success') return { text: 'OK', className: 'bg-emerald-500/10 text-emerald-500' };
@@ -60,6 +72,18 @@ const formatDate = (dateStr: string | null | undefined) => {
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return '--';
     return d.toLocaleString();
+  } catch {
+    return '--';
+  }
+};
+
+const formatOxidizedTimestamp = (dateStr: string | null | undefined) => {
+  if (!dateStr) return '--';
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '--';
+    const pad = (val: number) => String(val).padStart(2, '0');
+    return `${pad(d.getDate())}:${pad(d.getMonth() + 1)}:${d.getFullYear()}:${pad(d.getHours())}:${pad(d.getMinutes())}`;
   } catch {
     return '--';
   }
@@ -84,6 +108,13 @@ export default function Backup() {
   const [diffLoading, setDiffLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'diff' | 'content'>('diff');
   const [searchTerm, setSearchTerm] = useState('');
+  const [artifactInfo, setArtifactInfo] = useState<{ path?: string | null; paths?: string[]; repo?: string | null }>({});
+
+  // Logs state
+  const [logsModalOpen, setLogsModalOpen] = useState(false);
+  const [logsDevice, setLogsDevice] = useState<BackupDevice | null>(null);
+  const [logs, setLogs] = useState<BackupLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
 
   const { toast } = useToast();
   const { selectedTenantId, loading: tenantLoading } = useTenantContext();
@@ -144,6 +175,23 @@ export default function Backup() {
   const showVersions = async (device: BackupDevice) => {
     setSelectedDevice(device);
     await loadVersions(device.id, device);
+  };
+
+  const showLogs = async (device: BackupDevice) => {
+    setLogsDevice(device);
+    setLogsModalOpen(true);
+    setLogsLoading(true);
+
+    try {
+      const logData = await api.getDeviceBackupLogs(device.id, 100);
+      setLogs(Array.isArray(logData) ? logData : []);
+    } catch (err) {
+      console.error(err);
+      toast({ title: "Erro ao carregar logs", description: err instanceof Error ? err.message : undefined, variant: "destructive" });
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
   };
 
   return (
@@ -216,8 +264,9 @@ export default function Backup() {
                           <TableCell>
                             <Badge className={status.className}>{status.text}</Badge>
                           </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">
-                            {formatDate(device.oxidized?.lastRun)}
+                          <TableCell className="text-[11px] text-muted-foreground leading-tight">
+                            <div>Última coleta: {formatOxidizedTimestamp(device.oxidized?.lastRun)}</div>
+                            <div>Última versão: {formatOxidizedTimestamp(device.oxidized?.lastVersion)}</div>
                           </TableCell>
                           <TableCell className="text-center">
                             <Switch
@@ -227,9 +276,14 @@ export default function Backup() {
                             />
                           </TableCell>
                           <TableCell className="text-center">
-                            <Button variant="ghost" size="sm" className="gap-2" onClick={() => showVersions(device)}>
-                              <History className="h-4 w-4" /> Versões
-                            </Button>
+                            <div className="flex gap-2 justify-center">
+                              <Button variant="ghost" size="sm" className="gap-2" onClick={() => showVersions(device)}>
+                                <History className="h-4 w-4" /> Versões
+                              </Button>
+                              <Button variant="ghost" size="sm" className="gap-2" onClick={() => showLogs(device)}>
+                                <FileText className="h-4 w-4" /> Logs
+                              </Button>
+                            </div>
                           </TableCell>
                         </TableRow>
                       );
@@ -270,19 +324,23 @@ export default function Backup() {
                       setDiffModalOpen(true);
                       setDiffLoading(true);
                       setSearchTerm('');
+                      setArtifactInfo({});
 
                       try {
                         if (selectedVersions.length === 2) {
                           setViewMode('diff');
                           const res = await api.getBackupDiff(selectedDevice.name, selectedVersions[1], selectedVersions[0]);
                           setDiffContent(res?.diff || 'Sem diferenças.');
+                          setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
                         } else {
                           setViewMode('content');
                           const res = await api.getBackupContent(selectedDevice.name, selectedVersions[0]);
                           setDiffContent(res?.content || 'Conteúdo vazio.');
+                          setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
                         }
                       } catch (err) {
                         setDiffContent('Erro ao carregar: ' + (err instanceof Error ? err.message : String(err)));
+                        setArtifactInfo({});
                       } finally {
                         setDiffLoading(false);
                       }
@@ -376,6 +434,17 @@ export default function Backup() {
           )}
 
           <div className="flex-1 overflow-auto bg-muted/50 p-4 rounded-md border font-mono text-xs whitespace-pre-wrap">
+            {(artifactInfo.path || (artifactInfo.paths && artifactInfo.paths.length > 0) || artifactInfo.repo) && (
+              <div className="mb-3 font-sans text-[11px] text-muted-foreground">
+                {artifactInfo.path && <div>Arquivo encontrado: {artifactInfo.path}</div>}
+                {artifactInfo.repo && <div>Repositório: {artifactInfo.repo}</div>}
+                {artifactInfo.paths && artifactInfo.paths.length > 1 && (
+                  <div className="mt-1">
+                    Outras correspondências: {artifactInfo.paths.filter((p) => p !== artifactInfo.path).join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
             {diffLoading ? (
               <div className="flex items-center justify-center h-20 gap-2">
                 <Loader2 className="h-5 w-5 animate-spin" /> Carregando...
@@ -409,6 +478,98 @@ export default function Backup() {
               )
             ) : (
               <div className="text-center text-muted-foreground">Nenhum conteúdo disponível.</div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Logs Modal */}
+      <Dialog open={logsModalOpen} onOpenChange={setLogsModalOpen}>
+        <DialogContent className="max-w-4xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              Histórico de Backups
+            </DialogTitle>
+            <DialogDescription>
+              Histórico de coletas de backup para o dispositivo {logsDevice?.name} ({logsDevice?.ipAddress})
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-auto">
+            {logsLoading ? (
+              <div className="flex items-center justify-center h-32 gap-2">
+                <Loader2 className="h-5 w-5 animate-spin" /> Carregando logs...
+              </div>
+            ) : logs.length === 0 ? (
+              <div className="text-center text-muted-foreground py-8">
+                <FileText className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                <p>Nenhum log de backup encontrado para este dispositivo.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {logs.map((log, index) => {
+                  const isSuccess = log.status === 'success' || log.event === 'backup_success';
+                  const isFailed = log.status === 'error' || log.event === 'backup_fail';
+
+                  return (
+                    <div
+                      key={log.id || index}
+                      className={`p-4 rounded-lg border ${
+                        isSuccess ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800' :
+                        isFailed ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800' :
+                        'bg-muted/50'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-start gap-3 flex-1">
+                          <div className="mt-1">
+                            {isSuccess ? (
+                              <CheckCircle2 className="h-5 w-5 text-green-600" />
+                            ) : isFailed ? (
+                              <AlertCircle className="h-5 w-5 text-red-600" />
+                            ) : (
+                              <AlertTriangle className="h-5 w-5 text-yellow-600" />
+                            )}
+                          </div>
+
+                          <div className="flex-1 space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm">
+                                {log.event === 'backup_success' ? 'Backup realizado com sucesso' :
+                                 log.event === 'backup_fail' ? 'Falha no backup' :
+                                 log.event}
+                              </span>
+
+                              {log.hasChanges !== undefined && (
+                                <Badge variant={log.hasChanges ? "default" : "secondary"} className="text-xs">
+                                  {log.hasChanges ? '✓ Com alterações' : '— Sem alterações'}
+                                </Badge>
+                              )}
+
+                              {log.proxyName && (
+                                <Badge variant="outline" className="text-xs">
+                                  {log.proxyName}
+                                </Badge>
+                              )}
+                            </div>
+
+                            <div className="text-xs text-muted-foreground">
+                              {formatDate(log.timestamp)}
+                            </div>
+
+                            {log.message && (
+                              <div className="text-sm text-muted-foreground mt-2 font-mono bg-background/50 p-2 rounded">
+                                {log.message}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
         </DialogContent>

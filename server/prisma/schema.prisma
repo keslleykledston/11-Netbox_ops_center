@@ -18,6 +18,7 @@ model Tenant {
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
   sshSessions  SshSession[]
+  oxidizedProxies OxidizedProxy[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 }
@@ -74,6 +75,8 @@ model Device {
   lastSnmpOk    DateTime?
   sshStatus     String?  // "ok", "error", "auth_error", "timeout", "unknown"
   lastSshOk     DateTime?
+  oxidizedProxyId Int?
+  oxidizedProxy   OxidizedProxy? @relation(fields: [oxidizedProxyId], references: [id])
   discoveredInterfaces DiscoveredInterface[]
   discoveredBgpPeers   DiscoveredBgpPeer[]
   sshSessions  SshSession[]
@@ -170,4 +173,37 @@ model SshSession {
   @@index([tenantId])
   @@index([userId])
   @@index([deviceId])
+}
+
+// Oxidized Proxy - para gestão de proxies distribuídos
+model OxidizedProxy {
+  id          Int      @id @default(autoincrement())
+  name        String
+  siteId      String   @unique  // identificador único do proxy
+  tenantId    Int
+  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  endpoint    String?  // http://ip:8888 - preenchido após registro
+  apiKey      String   // gerado automaticamente
+  gitRepoUrl  String?
+  status      String   @default("pending") // pending, active, offline
+  lastSeen    DateTime?
+  deviceCount Int      @default(0)
+  interval    Int      @default(1800) // intervalo de backup em segundos (padrão: 30 min)
+  devices     Device[]
+  logs        OxidizedProxyLog[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Logs de eventos dos proxies
+model OxidizedProxyLog {
+  id        Int      @id @default(autoincrement())
+  proxyId   Int
+  proxy     OxidizedProxy @relation(fields: [proxyId], references: [id], onDelete: Cascade)
+  event     String   // backup_success, backup_fail, push_ok, push_fail
+  device    String?
+  message   String?
+  createdAt DateTime @default(now())
+
+  @@index([proxyId])
 }

@@ -267,5 +267,36 @@ export const api = {
   async getServiceHealth() {
     return apiFetch('/health/services', { method: 'GET' });
   },
+  // Oxidized Proxy
+  async listOxidizedProxies() {
+    return apiFetch('/oxidized-proxy', { method: 'GET' });
+  },
+  async createOxidizedProxy(data: { name: string; siteId: string; gitRepoUrl?: string }) {
+    return apiFetch('/oxidized-proxy', { method: 'POST', body: JSON.stringify(data) });
+  },
+  async updateOxidizedProxy(id: number | string, data: { interval?: number }) {
+    return apiFetch(`/oxidized-proxy/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+  },
+  async deleteOxidizedProxy(id: number | string) {
+    return apiFetch(`/oxidized-proxy/${id}`, { method: 'DELETE' });
+  },
+  async getOxidizedProxyDeployScript(id: number | string) {
+    const res = await fetch(`${API_BASE}/oxidized-proxy/${id}/deploy-script`, {
+      headers: {
+        Authorization: `Bearer ${getToken()}`,
+      },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  },
+  async syncOxidizedProxy(id: number | string) {
+    return apiFetch(`/oxidized-proxy/${id}/sync`, { method: 'POST' });
+  },
+  async syncAllOxidizedProxies() {
+    return apiFetch('/oxidized-proxy/sync-all', { method: 'POST' });
+  },
+  async getDeviceBackupLogs(deviceId: number | string, limit = 100) {
+    return apiFetch(`/devices/${deviceId}/backup-logs?limit=${limit}`, { method: 'GET' });
+  },
 };
 import { toast as sonnerToast } from "sonner";

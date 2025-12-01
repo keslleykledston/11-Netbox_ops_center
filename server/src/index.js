@@ -8,7 +8,7 @@ import { PrismaClient } from "@prisma/client";
 import os from "node:os";
 import { getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
-import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus, getOxidizedDiff, getOxidizedContent } from "./modules/monitor/oxidized-service.js";
+import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus, getOxidizedDiff, getOxidizedContent, getLatestOxidizedVersionTimes } from "./modules/monitor/oxidized-service.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
 import { addNetboxSyncJob, addSnmpDiscoveryJob, addSnmpPollingJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
@@ -435,6 +435,7 @@ app.post("/devices", requireAuth, async (req, res) => {
     username, // credentials
     password, // credentials
     backupEnabled = false,
+    oxidizedProxyId = null,
   } = req.body || {};
 
   if (!name || !ipAddress || !manufacturer || !model) {
@@ -456,6 +457,7 @@ app.post("/devices", requireAuth, async (req, res) => {
       snmpPort: snmpPort ? Number(snmpPort) : null,
       sshPort: sshPort ? Number(sshPort) : null,
       backupEnabled: !!backupEnabled,
+      oxidizedProxyId: oxidizedProxyId ? Number(oxidizedProxyId) : null,
     };
 
     if (username) data.credUsername = username;
@@ -474,6 +476,13 @@ app.post("/devices", requireAuth, async (req, res) => {
     // Initial SNMP discovery if configured
     if (device.snmpVersion && device.snmpCommunity) {
       addSnmpDiscoveryJob(device.id, "interfaces", req.user?.sub, req.user?.tenantId).catch(() => { });
+    }
+
+    // Notificar Oxidized proxies sobre novo dispositivo
+    if (device.backupEnabled) {
+      notifyOxidizedProxies(device.id, 'create').catch(err => {
+        console.warn('[OXIDIZED] Failed to notify proxies on device create:', err);
+      });
     }
 
     res.status(201).json(sanitizeDeviceOutput(device));
@@ -507,6 +516,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
     username,
     password,
     backupEnabled,
+    oxidizedProxyId,
   } = req.body || {};
 
   const data = {};
@@ -522,6 +532,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
   if (snmpPort !== undefined) data.snmpPort = snmpPort ? Number(snmpPort) : null;
   if (sshPort !== undefined) data.sshPort = sshPort ? Number(sshPort) : null;
   if (backupEnabled !== undefined) data.backupEnabled = !!backupEnabled;
+  if (oxidizedProxyId !== undefined) data.oxidizedProxyId = oxidizedProxyId ? Number(oxidizedProxyId) : null;
 
   if (username !== undefined) data.credUsername = username;
   if (password !== undefined) {
@@ -539,6 +550,14 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
       }
     }
 
+    // Notificar Oxidized proxies sobre atualização do dispositivo
+    const shouldNotify = ipAddress || sshPort || username || password || backupEnabled !== undefined || oxidizedProxyId !== undefined || name;
+    if (shouldNotify && (updated.backupEnabled || device.backupEnabled)) {
+      notifyOxidizedProxies(id, 'update').catch(err => {
+        console.warn('[OXIDIZED] Failed to notify proxies on device update:', err);
+      });
+    }
+
     res.json(sanitizeDeviceOutput(await prisma.device.findUnique({ where: { id } })));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
@@ -554,6 +573,10 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
   await prisma.device.delete({ where: { id } });
   if (device.backupEnabled) {
     await syncRouterDbFromDb();
+    // Notificar Oxidized proxies sobre remoção do dispositivo
+    notifyOxidizedProxies(id, 'delete').catch(err => {
+      console.warn('[OXIDIZED] Failed to notify proxies on device delete:', err);
+    });
   }
   enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => { });
   res.status(204).send();
@@ -584,6 +607,14 @@ app.patch('/devices/:id/credentials', requireAuth, async (req, res) => {
     data.credUpdatedAt = new Date();
   }
   const updated = await prisma.device.update({ where: { id }, data });
+
+  // Notificar Oxidized proxies sobre atualização de credenciais
+  if (device.backupEnabled && (username !== undefined || password !== undefined)) {
+    notifyOxidizedProxies(id, 'update').catch(err => {
+      console.warn('[OXIDIZED] Failed to notify proxies on credentials update:', err);
+    });
+  }
+
   res.json({ ok: true, id: updated.id });
 });
 
@@ -628,6 +659,11 @@ app.get('/backup/devices', requireAuth, async (req, res) => {
   const where = buildDeviceWhere(req);
   const devices = await prisma.device.findMany({ where, orderBy: { id: 'desc' } });
   const nodesResp = await fetchOxidizedNodes();
+  const versionsResp = await getLatestOxidizedVersionTimes(devices.map((d) => d.name));
+  if (versionsResp?.ok === false) {
+    console.warn('[BACKUP] Não foi possível obter última versão do Oxidized:', versionsResp?.error);
+  }
+  const lastVersions = versionsResp?.versions || new Map();
   const nodesMap = new Map();
   if (nodesResp?.nodes) {
     for (const node of nodesResp.nodes) {
@@ -644,11 +680,13 @@ app.get('/backup/devices', requireAuth, async (req, res) => {
         present: true,
         status: node.status || node.last?.status || 'unknown',
         lastRun: node.time || node.last?.end || null,
+        lastVersion: lastVersions.get(device.name) || null,
       }
       : {
         present: false,
         status: device.backupEnabled ? 'pending' : 'inactive',
         lastRun: null,
+        lastVersion: lastVersions.get(device.name) || null,
       };
     return {
       id: device.id,
@@ -869,6 +907,429 @@ app.patch("/applications/:id", requireAuth, async (req, res) => {
 
   const updated = await prisma.application.update({ where: { id }, data });
   res.json(updated);
+});
+
+// ========== OXIDIZED PROXY ROUTES ==========
+
+// Listar proxies do tenant
+app.get("/oxidized-proxy", requireAuth, async (req, res) => {
+  const where = req.user.tenantId ? { tenantId: req.user.tenantId } : {};
+  const proxies = await prisma.oxidizedProxy.findMany({
+    where,
+    include: {
+      _count: {
+        select: { devices: true }
+      }
+    },
+    orderBy: { id: "desc" }
+  });
+  res.json(proxies);
+});
+
+// Criar proxy
+app.post("/oxidized-proxy", requireAuth, async (req, res) => {
+  const tenantId =
+    req.user.tenantId ||
+    (await prisma.tenant.upsert({ where: { name: "default" }, update: {}, create: { name: "default" } })).id;
+
+  const { name, siteId, gitRepoUrl = null } = req.body || {};
+  if (!name || !siteId) return res.status(400).json({ error: "name and siteId required" });
+
+  // Gerar API key única
+  const crypto = await import("crypto");
+  const apiKey = crypto.randomBytes(32).toString("hex");
+
+  try {
+    const proxy = await prisma.oxidizedProxy.create({
+      data: { name, siteId, gitRepoUrl, apiKey, tenantId }
+    });
+    res.status(201).json(proxy);
+  } catch (e) {
+    if (e.code === "P2002") {
+      return res.status(409).json({ error: "Site ID já existe" });
+    }
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Atualizar proxy
+app.patch("/oxidized-proxy/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const proxy = await prisma.oxidizedProxy.findUnique({ where: { id } });
+  if (!proxy || (req.user.tenantId && proxy.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  const { interval } = req.body || {};
+  const data = {};
+
+  if (interval !== undefined) {
+    const intervalNum = Number(interval);
+    if (!Number.isFinite(intervalNum) || intervalNum < 300 || intervalNum > 86400) {
+      return res.status(400).json({ error: "Interval must be between 300 (5 min) and 86400 (24h) seconds" });
+    }
+    data.interval = intervalNum;
+  }
+
+  const updated = await prisma.oxidizedProxy.update({ where: { id }, data });
+  res.json(updated);
+});
+
+// Deletar proxy
+app.delete("/oxidized-proxy/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const proxy = await prisma.oxidizedProxy.findUnique({ where: { id } });
+  if (!proxy || (req.user.tenantId && proxy.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  await prisma.oxidizedProxy.delete({ where: { id } });
+  res.json({ success: true });
+});
+
+// Gerar script de deploy
+app.get("/oxidized-proxy/:id/deploy-script", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const proxy = await prisma.oxidizedProxy.findUnique({ where: { id } });
+  if (!proxy || (req.user.tenantId && proxy.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  const centralUrl = process.env.APP_URL || `http://${req.headers.host}`;
+  const script = `#!/bin/bash
+curl -sSL ${centralUrl}/oxidized-proxy/install.sh | bash -s -- \\
+  "${proxy.siteId}" \\
+  "${centralUrl}" \\
+  "${proxy.apiKey}" \\
+  "${proxy.gitRepoUrl || ''}"`;
+
+  res.type("text/plain").send(script);
+});
+
+// === ENDPOINTS PARA O PROXY REMOTO (autenticação via API Key) ===
+
+// Middleware de autenticação para proxies
+async function proxyAuth(req, res, next) {
+  const apiKey = req.headers["x-api-key"];
+  const siteId = req.params.siteId;
+  if (!apiKey || !siteId) return res.status(401).json({ error: "Unauthorized" });
+
+  const proxy = await prisma.oxidizedProxy.findFirst({ where: { siteId, apiKey } });
+  if (!proxy) return res.status(401).json({ error: "Unauthorized" });
+
+  req.proxy = proxy;
+  next();
+}
+
+// Mapeamento de plataformas NetBox para Oxidized
+function mapPlatformToOxidized(platform) {
+  const map = {
+    "mikrotik-routeros": "routeros",
+    "huawei-vrp": "vrp",
+    "cisco-ios": "ios",
+    "cisco-iosxe": "iosxe",
+    "juniper-junos": "junos",
+    "fortinet-fortios": "fortios"
+  };
+  return map[platform] || "ios";
+}
+
+// Função para notificar proxies Oxidized sobre mudanças
+async function notifyOxidizedProxies(deviceId, action = 'reload') {
+  try {
+    const device = await prisma.device.findUnique({
+      where: { id: Number(deviceId) },
+      include: { oxidizedProxy: true }
+    });
+
+    if (!device) {
+      console.warn('[OXIDIZED] Device not found:', deviceId);
+      return { success: false, error: 'Device not found' };
+    }
+
+    // Se o dispositivo tem proxy específico, notifica apenas ele
+    // Se não tem, notifica todos os proxies do tenant (caso use proxy central)
+    const proxiesToNotify = device.oxidizedProxyId
+      ? [device.oxidizedProxy]
+      : await prisma.oxidizedProxy.findMany({
+          where: { tenantId: device.tenantId, status: 'active' }
+        });
+
+    const results = [];
+
+    for (const proxy of proxiesToNotify.filter(p => p && p.endpoint)) {
+      try {
+        // Notificar o proxy para recarregar configuração
+        const reloadUrl = `${proxy.endpoint}/reload`;
+        const reloadRes = await fetch(reloadUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000)
+        }).catch(err => {
+          console.warn(`[OXIDIZED] Failed to reload proxy ${proxy.name}:`, err.message);
+          return null;
+        });
+
+        // Se for update ou delete, também força backup imediato do dispositivo
+        if (action === 'update' && device.name) {
+          const nextUrl = `${proxy.endpoint}/node/next/${encodeURIComponent(device.name)}`;
+          await fetch(nextUrl, {
+            method: 'POST',
+            signal: AbortSignal.timeout(5000)
+          }).catch(err => {
+            console.warn(`[OXIDIZED] Failed to trigger backup for ${device.name}:`, err.message);
+          });
+        }
+
+        results.push({
+          proxyId: proxy.id,
+          proxyName: proxy.name,
+          success: !!reloadRes,
+          action
+        });
+
+        console.log(`[OXIDIZED] Notified proxy ${proxy.name} (${proxy.endpoint}) - Action: ${action}`);
+      } catch (err) {
+        console.warn(`[OXIDIZED] Error notifying proxy ${proxy.name}:`, err.message);
+        results.push({
+          proxyId: proxy.id,
+          proxyName: proxy.name,
+          success: false,
+          error: err.message
+        });
+      }
+    }
+
+    return { success: true, results };
+  } catch (err) {
+    console.error('[OXIDIZED] Error in notifyOxidizedProxies:', err);
+    return { success: false, error: err.message };
+  }
+}
+
+// Lista de dispositivos para o proxy coletar
+app.get("/api/v1/oxidized-proxy/:siteId/devices", proxyAuth, async (req, res) => {
+  const devices = await prisma.device.findMany({
+    where: {
+      tenantId: req.proxy.tenantId,
+      oxidizedProxyId: req.proxy.id
+    }
+  });
+
+  const oxidizedFormat = devices.map(d => ({
+    name: d.name,
+    ip: d.ipAddress,
+    model: mapPlatformToOxidized(d.platform),
+    username: d.credUsername || "admin",
+    password: d.credPasswordEnc ? decryptSecret(d.credPasswordEnc) : "",
+    enable: "",
+    vars: { tenant: req.proxy.tenantId, site: d.site || "" }
+  }));
+
+  res.json(oxidizedFormat);
+});
+
+// Registro do proxy (chamado pelo script de deploy)
+app.post("/api/v1/oxidized-proxy/register", async (req, res) => {
+  const { site_id, endpoint } = req.body || {};
+  const apiKey = req.headers["x-api-key"];
+
+  if (!site_id || !apiKey || !endpoint) {
+    return res.status(400).json({ error: "site_id, endpoint and x-api-key required" });
+  }
+
+  const result = await prisma.oxidizedProxy.updateMany({
+    where: { siteId: site_id, apiKey },
+    data: { endpoint, status: "active", lastSeen: new Date() }
+  });
+
+  if (result.count === 0) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  res.json({ success: true });
+});
+
+// Recebe status de backup
+app.post("/api/v1/oxidized-proxy/:siteId/status", proxyAuth, async (req, res) => {
+  const { event, node, status, message } = req.body || {};
+
+  await prisma.oxidizedProxyLog.create({
+    data: {
+      proxyId: req.proxy.id,
+      event: event || "unknown",
+      device: node || null,
+      message: message || null
+    }
+  });
+
+  await prisma.oxidizedProxy.update({
+    where: { id: req.proxy.id },
+    data: { lastSeen: new Date() }
+  });
+
+  res.json({ success: true });
+});
+
+// Endpoint manual para forçar sincronização de um proxy
+app.post("/oxidized-proxy/:id/sync", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const proxy = await prisma.oxidizedProxy.findUnique({ where: { id } });
+
+  if (!proxy || (req.user.tenantId && proxy.tenantId !== req.user.tenantId)) {
+    return res.status(404).json({ error: "Not found" });
+  }
+
+  if (!proxy.endpoint) {
+    return res.status(400).json({ error: "Proxy não tem endpoint configurado" });
+  }
+
+  try {
+    // Forçar reload do proxy
+    const reloadUrl = `${proxy.endpoint}/reload`;
+    const reloadRes = await fetch(reloadUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(10000)
+    });
+
+    if (!reloadRes.ok) {
+      throw new Error(`Proxy retornou status ${reloadRes.status}`);
+    }
+
+    res.json({
+      success: true,
+      message: `Proxy ${proxy.name} sincronizado com sucesso`,
+      endpoint: proxy.endpoint
+    });
+  } catch (err) {
+    res.status(500).json({
+      error: `Falha ao sincronizar proxy: ${err.message}`,
+      endpoint: proxy.endpoint
+    });
+  }
+});
+
+// Endpoint para sincronizar todos os proxies de um tenant
+app.post("/oxidized-proxy/sync-all", requireAuth, async (req, res) => {
+  const tenantId = req.user.tenantId;
+  const where = tenantId ? { tenantId, status: 'active' } : { status: 'active' };
+
+  const proxies = await prisma.oxidizedProxy.findMany({
+    where,
+    select: { id: true, name: true, endpoint: true }
+  });
+
+  const results = [];
+
+  for (const proxy of proxies.filter(p => p.endpoint)) {
+    try {
+      const reloadUrl = `${proxy.endpoint}/reload`;
+      const reloadRes = await fetch(reloadUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(10000)
+      });
+
+      results.push({
+        proxyId: proxy.id,
+        proxyName: proxy.name,
+        success: reloadRes.ok,
+        status: reloadRes.status
+      });
+    } catch (err) {
+      results.push({
+        proxyId: proxy.id,
+        proxyName: proxy.name,
+        success: false,
+        error: err.message
+      });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+
+  res.json({
+    success: successCount > 0,
+    total: results.length,
+    synced: successCount,
+    results
+  });
+});
+
+// Endpoint para buscar logs de backup de um dispositivo
+app.get("/devices/:id/backup-logs", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const limit = Number(req.query.limit) || 100;
+
+  try {
+    const device = await prisma.device.findUnique({
+      where: { id },
+      include: { oxidizedProxy: true }
+    });
+
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: "Device not found" });
+    }
+
+    // Buscar logs do proxy associado ao dispositivo
+    const logs = await prisma.oxidizedProxyLog.findMany({
+      where: {
+        device: device.name,
+        proxy: device.oxidizedProxyId ? {
+          id: device.oxidizedProxyId
+        } : {
+          tenantId: device.tenantId
+        }
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      include: {
+        proxy: {
+          select: { name: true, endpoint: true }
+        }
+      }
+    });
+
+    // Se houver proxy com endpoint, buscar também do Oxidized
+    let oxidizedLogs = [];
+    if (device.oxidizedProxy?.endpoint) {
+      try {
+        const oxidizedUrl = `${device.oxidizedProxy.endpoint}/node/stats/${encodeURIComponent(device.name)}`;
+        const oxidizedRes = await fetch(oxidizedUrl, {
+          signal: AbortSignal.timeout(5000)
+        }).catch(() => null);
+
+        if (oxidizedRes && oxidizedRes.ok) {
+          const data = await oxidizedRes.json();
+          oxidizedLogs = data.history || [];
+        }
+      } catch (err) {
+        console.warn('[BACKUP-LOGS] Failed to fetch from Oxidized:', err.message);
+      }
+    }
+
+    res.json({
+      device: {
+        id: device.id,
+        name: device.name,
+        ipAddress: device.ipAddress
+      },
+      logs: logs.map(log => ({
+        id: log.id,
+        event: log.event,
+        message: log.message,
+        timestamp: log.createdAt,
+        proxyName: log.proxy?.name,
+        success: log.event?.includes('success'),
+        hasChange: log.message?.toLowerCase().includes('change') || log.message?.toLowerCase().includes('diff')
+      })),
+      oxidizedLogs,
+      total: logs.length
+    });
+  } catch (err) {
+    res.status(500).json({ error: String(err?.message || err) });
+  }
 });
 
 // Allow user to change password when flagged for reset
@@ -1190,7 +1651,7 @@ app.get('/backup/content', requireAuth, async (req, res) => {
     if (!result.ok) {
       return res.status(500).json({ error: result.error });
     }
-    res.json({ content: result.content });
+    res.json({ content: result.content, path: result.path || null, paths: result.paths || [], repo: result.repo || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1206,7 +1667,7 @@ app.get('/backup/diff', requireAuth, async (req, res) => {
     if (!result.ok) {
       return res.status(500).json({ error: result.error });
     }
-    res.json({ diff: result.diff });
+    res.json({ diff: result.diff, path: result.path || null, paths: result.paths || [], repo: result.repo || null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1825,6 +2286,17 @@ app.get("/admin/logs", requireAuth, requireAdmin, async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Servir script de instalação do Oxidized Proxy
+app.get("/oxidized-proxy/install.sh", async (_req, res) => {
+  try {
+    const scriptPath = path.join(__dirname, "../../public/oxidized-proxy/install.sh");
+    const scriptContent = await fs.readFile(scriptPath, "utf8");
+    res.type("text/plain").send(scriptContent);
+  } catch (e) {
+    res.status(404).json({ error: "Install script not found" });
   }
 });
 

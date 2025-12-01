@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal } from "lucide-react";
+import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal, Layers } from "lucide-react";
 import { getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import IdleSessionManager from "@/components/session/IdleSessionManager";
@@ -31,6 +31,7 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     { name: "Acesso Remoto", href: "/access/terminal", icon: Terminal },
     { name: "Peers BGP", href: "/bgp-peers", icon: GitBranch },
     { name: "Backup", href: "/backup", icon: HardDrive },
+    { name: "Oxidized Proxies", href: "/oxidized-proxies", icon: Layers },
     { name: "Aplicações", href: "/applications", icon: Settings },
     { name: "Manutenção", href: "/maintenance", icon: Wrench },
     ...(resolvedIsAdmin ? [{ name: "Usuários", href: "/users", icon: UsersIcon }] : [{ name: "Usuário", href: "/me", icon: UsersIcon }]),
@@ -54,51 +55,49 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
             NetManager
           </span>
         </div>
+        <div className="border-b border-sidebar-border px-4 py-3">
+          <p className="text-xs text-muted-foreground mb-1">Tenant ativo</p>
+          {resolvedIsAdmin ? (
+            <Select
+              value={selectedTenantId || ""}
+              onValueChange={(v) => setSelectedTenantId(v || null)}
+              disabled={loading || tenants.length === 0}
+            >
+              <SelectTrigger className="h-9 bg-sidebar-accent/30 border-sidebar-border text-sidebar-foreground">
+                <SelectValue placeholder="Selecione o tenant" />
+              </SelectTrigger>
+              <SelectContent>
+                {tenants.length === 0 && <SelectItem value="" disabled>Nenhum tenant disponível</SelectItem>}
+                {tenants.map((t) => (
+                  <SelectItem key={t.id} value={String(t.id)}>
+                    {t.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div className="rounded-md bg-sidebar-accent/30 px-2 py-1 text-sm text-sidebar-foreground">
+              {tenants.find((t) => String(t.id) === (selectedTenantId || ""))?.name || "Tenant atribuído"}
+            </div>
+          )}
+        </div>
         <nav className="flex flex-col gap-1 p-4">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href;
             return (
-              <div key={item.name} className="flex flex-col gap-2">
-                <Link
-                  to={item.href}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
-                    isActive
-                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent/50"
-                  )}
-                >
-                  <item.icon className="h-5 w-5" />
-                  {item.name}
-                </Link>
-                {item.name === "Dashboard" && (
-                  <div className="rounded-lg border border-sidebar-border bg-sidebar/60 px-3 py-2">
-                    <p className="text-xs text-muted-foreground mb-1">Tenant ativo</p>
-                    {resolvedIsAdmin ? (
-                      <Select
-                        value={selectedTenantId || ""}
-                        onValueChange={(v) => setSelectedTenantId(v || null)}
-                        disabled={loading || tenants.length === 0}
-                      >
-                        <SelectTrigger className="h-9 bg-sidebar-accent/30 border-sidebar-border text-sidebar-foreground">
-                          <SelectValue placeholder="Selecione o tenant" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {tenants.map((t) => (
-                            <SelectItem key={t.id} value={String(t.id)}>
-                              {t.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <div className="rounded-md bg-sidebar-accent/30 px-2 py-1 text-sm text-sidebar-foreground">
-                        {tenants.find((t) => String(t.id) === (selectedTenantId || ""))?.name || "Tenant atribuído"}
-                      </div>
-                    )}
-                  </div>
+              <Link
+                key={item.name}
+                to={item.href}
+                className={cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors",
+                  isActive
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground hover:bg-sidebar-accent/50"
                 )}
-              </div>
+              >
+                <item.icon className="h-5 w-5" />
+                {item.name}
+              </Link>
             );
           })}
         </nav>

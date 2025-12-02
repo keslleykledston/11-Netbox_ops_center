@@ -15,13 +15,26 @@ export async function processLibreNmsSync(job) {
     await job.updateProgress(10);
     await job.log(`Processing LibreNMS ${action} for device ${deviceId}`);
 
+    // Get tenant name for grouping
+    let tenantName = null;
+    if (deviceData.tenantId) {
+      const tenant = await prisma.tenant.findUnique({
+        where: { id: deviceData.tenantId },
+        select: { name: true },
+      });
+      tenantName = tenant?.name || null;
+      if (tenantName) {
+        await job.log(`Tenant: ${tenantName}`);
+      }
+    }
+
     let result;
     let libreNmsId = null;
 
     switch (action) {
       case 'add':
         // Add device to LibreNMS
-        result = await addDeviceToLibreNMS(deviceData);
+        result = await addDeviceToLibreNMS(deviceData, tenantName);
 
         if (result.success && result.deviceId) {
           libreNmsId = result.deviceId;
@@ -62,7 +75,7 @@ export async function processLibreNmsSync(job) {
         if (!dbDevice.libreNmsId) {
           // Device not in LibreNMS yet, add it instead
           await job.log('Device not in LibreNMS, adding instead of updating...');
-          result = await addDeviceToLibreNMS(deviceData);
+          result = await addDeviceToLibreNMS(deviceData, tenantName);
 
           if (result.success && result.deviceId) {
             await prisma.device.update({
@@ -73,7 +86,7 @@ export async function processLibreNmsSync(job) {
           }
         } else {
           // Update existing device in LibreNMS
-          result = await updateDeviceInLibreNMS(dbDevice.libreNmsId, deviceData);
+          result = await updateDeviceInLibreNMS(dbDevice.libreNmsId, deviceData, tenantName);
           await job.log(`Device updated in LibreNMS (ID ${dbDevice.libreNmsId})`);
         }
         break;

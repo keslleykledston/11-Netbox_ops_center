@@ -64,7 +64,7 @@ async function librenmsRequest(path, options = {}) {
 /**
  * Normalize device payload for LibreNMS
  */
-function normalizeDevicePayload(device) {
+function normalizeDevicePayload(device, tenantName = null) {
   // LibreNMS prefers hostname, but we use IP if hostname is missing
   const hostname = device.hostname || device.ipAddress;
 
@@ -103,29 +103,41 @@ function normalizeDevicePayload(device) {
     payload.sysName = device.hostname;
   }
 
+  // Add poller_group based on tenant (for organization/grouping in LibreNMS)
+  if (tenantName) {
+    payload.poller_group = tenantName;
+  }
+
+  console.log(`[LIBRENMS] Normalized payload for ${device.name}:`, JSON.stringify(payload, null, 2));
+
   return payload;
 }
 
 /**
  * Add device to LibreNMS
  * @param {Object} device - Device object from database
+ * @param {string} tenantName - Tenant name for grouping (optional)
  * @returns {Promise<Object>} LibreNMS response
  */
-export async function addDeviceToLibreNMS(device) {
+export async function addDeviceToLibreNMS(device, tenantName = null) {
   if (!isConfigured()) {
     console.warn('[LIBRENMS] Not configured, skipping device add');
     return { skipped: true };
   }
 
+  console.log(`[LIBRENMS] Adding device ${device.name} (${device.ipAddress}) to LibreNMS...`);
+  console.log(`[LIBRENMS] SNMP Version: ${device.snmpVersion}, Community: ${device.snmpCommunity ? '***' : 'not set'}, Port: ${device.snmpPort || 161}`);
+
   try {
-    const payload = normalizeDevicePayload(device);
+    const payload = normalizeDevicePayload(device, tenantName);
 
     const response = await librenmsRequest('/api/v0/devices', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
 
-    console.log(`[LIBRENMS] Added device ${device.name} (${device.ipAddress})`);
+    console.log(`[LIBRENMS] ✅ Successfully added device ${device.name} (${device.ipAddress})`);
+    console.log(`[LIBRENMS] Response:`, response);
     return {
       success: true,
       deviceId: response.device_id || response.id,
@@ -137,6 +149,7 @@ export async function addDeviceToLibreNMS(device) {
       console.log(`[LIBRENMS] Device ${device.name} already exists, fetching ID...`);
       const existingDevice = await getDeviceByHostname(device.hostname || device.ipAddress);
       if (existingDevice) {
+        console.log(`[LIBRENMS] Found existing device ID: ${existingDevice.device_id}`);
         return {
           success: true,
           deviceId: existingDevice.device_id,
@@ -146,7 +159,7 @@ export async function addDeviceToLibreNMS(device) {
       }
     }
 
-    console.error(`[LIBRENMS] Failed to add device ${device.name}:`, err.message);
+    console.error(`[LIBRENMS] ❌ Failed to add device ${device.name}:`, err.message);
     return { success: false, error: err.message };
   }
 }
@@ -155,23 +168,26 @@ export async function addDeviceToLibreNMS(device) {
  * Update device in LibreNMS
  * @param {number} libreNmsId - LibreNMS device ID
  * @param {Object} device - Updated device object
+ * @param {string} tenantName - Tenant name for grouping (optional)
  * @returns {Promise<Object>} LibreNMS response
  */
-export async function updateDeviceInLibreNMS(libreNmsId, device) {
+export async function updateDeviceInLibreNMS(libreNmsId, device, tenantName = null) {
   if (!isConfigured()) return { skipped: true };
 
+  console.log(`[LIBRENMS] Updating device ${device.name} (ID: ${libreNmsId})...`);
+
   try {
-    const payload = normalizeDevicePayload(device);
+    const payload = normalizeDevicePayload(device, tenantName);
 
     const response = await librenmsRequest(`/api/v0/devices/${libreNmsId}`, {
       method: 'PATCH',
       body: JSON.stringify(payload),
     });
 
-    console.log(`[LIBRENMS] Updated device ${device.name} (ID: ${libreNmsId})`);
+    console.log(`[LIBRENMS] ✅ Successfully updated device ${device.name} (ID: ${libreNmsId})`);
     return { success: true, message: response.message || 'Device updated' };
   } catch (err) {
-    console.error(`[LIBRENMS] Failed to update device ${device.name}:`, err.message);
+    console.error(`[LIBRENMS] ❌ Failed to update device ${device.name}:`, err.message);
     return { success: false, error: err.message };
   }
 }

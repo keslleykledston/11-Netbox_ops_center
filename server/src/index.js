@@ -1744,6 +1744,38 @@ app.get('/queues/:queue/jobs', requireAuth, async (req, res) => {
   }
 });
 
+// Queue overview - status de todas as filas
+app.get('/queues/overview', requireAuth, async (req, res) => {
+  try {
+    const queueMap = getAllQueues();
+    const overview = [];
+
+    for (const [queueName, queue] of queueMap.entries()) {
+      const [waiting, active, completed, failed, delayed] = await Promise.all([
+        queue.getWaitingCount(),
+        queue.getActiveCount(),
+        queue.getCompletedCount(),
+        queue.getFailedCount(),
+        queue.getDelayedCount(),
+      ]);
+
+      overview.push({
+        name: queueName,
+        waiting,
+        active,
+        completed,
+        failed,
+        delayed,
+        total: waiting + active + completed + failed + delayed,
+      });
+    }
+
+    res.json({ queues: overview });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // Lista peers BGP descobertos por tenant (escopo do usuário ou por query ?tenantId=)
 app.get('/bgp/peers', requireAuth, async (req, res) => {
   try {

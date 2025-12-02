@@ -119,7 +119,7 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
       isActive: true,
       backupEnabled: false,
       monitoringEnabled: false,
-      oxidizedProxyId: "",
+      oxidizedProxyId: "default",
     },
   });
 
@@ -154,7 +154,9 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
         sshPort: parseInt(data.sshPort, 10),
         backupEnabled: data.backupEnabled,
         monitoringEnabled: data.monitoringEnabled,
-        oxidizedProxyId: data.oxidizedProxyId ? parseInt(data.oxidizedProxyId, 10) : undefined,
+        oxidizedProxyId: data.oxidizedProxyId && data.oxidizedProxyId !== "default"
+          ? parseInt(data.oxidizedProxyId, 10)
+          : undefined,
       };
 
       const success = await createDevice(newDevice);
@@ -335,14 +337,14 @@ const AddDeviceDialog = ({ open, onOpenChange }: AddDeviceDialogProps) => {
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Oxidized Proxy (Opcional)</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
+                  <Select onValueChange={field.onChange} value={field.value || "default"}>
                     <FormControl>
                       <SelectTrigger className="bg-zinc-800 text-white border-zinc-700">
                         <SelectValue placeholder="Proxy padrão (central)" />
                       </SelectTrigger>
                     </FormControl>
                     <SelectContent>
-                      <SelectItem value="">Proxy padrão (central)</SelectItem>
+                      <SelectItem value="default">Proxy padrão (central)</SelectItem>
                       {proxies.map((proxy) => (
                         <SelectItem key={proxy.id} value={String(proxy.id)}>
                           {proxy.name}

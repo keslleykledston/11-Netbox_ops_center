@@ -7,6 +7,7 @@ const execAsync = util.promisify(exec);
 
 const BASE_URL = (process.env.OXIDIZED_API_URL || 'http://oxidized:8888').replace(/\/$/, '');
 const ROUTER_DB_PATH = process.env.OXIDIZED_ROUTER_DB || '/etc/oxidized/router.db';
+const OX_HTTP_SOURCE_URL = (process.env.OXIDIZED_HTTP_SOURCE_URL || 'http://backend:4000/oxidized/nodes').replace(/\/$/, '');
 const CONFIG_DIR = path.dirname(ROUTER_DB_PATH);
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config');
 const GIT_REPO_PATH = path.join(CONFIG_DIR, 'git-repos/default.git');
@@ -186,7 +187,7 @@ output:
 source:
   default: http
   http:
-    url: http://netbox-ops-center-app:4000/oxidized/nodes
+    url: ${OX_HTTP_SOURCE_URL}
     map:
       name: name
       ip: ip

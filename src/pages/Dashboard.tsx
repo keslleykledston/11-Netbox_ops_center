@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Server, GitBranch, Users, AlertCircle, Cpu, HardDrive } from "lucide-react";
 import { api } from "@/lib/api";
 import { useTenantContext } from "@/contexts/TenantContext";
+import { cn } from "@/lib/utils";
 
 type HostStats = {
   cpu: { percent: number; load1m: number; cores: number };

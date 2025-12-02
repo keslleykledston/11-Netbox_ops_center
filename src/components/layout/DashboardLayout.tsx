@@ -59,20 +59,23 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
           <p className="text-xs text-muted-foreground mb-1">Tenant ativo</p>
           {resolvedIsAdmin ? (
             <Select
-              value={selectedTenantId || ""}
-              onValueChange={(v) => setSelectedTenantId(v || null)}
+              value={selectedTenantId ? String(selectedTenantId) : undefined}
+              onValueChange={(v) => setSelectedTenantId(v ? v : null)}
               disabled={loading || tenants.length === 0}
             >
               <SelectTrigger className="h-9 bg-sidebar-accent/30 border-sidebar-border text-sidebar-foreground">
                 <SelectValue placeholder="Selecione o tenant" />
               </SelectTrigger>
               <SelectContent>
-                {tenants.length === 0 && <SelectItem value="" disabled>Nenhum tenant disponível</SelectItem>}
-                {tenants.map((t) => (
-                  <SelectItem key={t.id} value={String(t.id)}>
-                    {t.name}
-                  </SelectItem>
-                ))}
+                {tenants.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-muted-foreground">Nenhum tenant disponível</div>
+                ) : (
+                  tenants.map((t) => (
+                    <SelectItem key={t.id} value={String(t.id)}>
+                      {t.name}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
           ) : (

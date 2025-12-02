@@ -184,6 +184,7 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
 
       const ip = d.primary_ip?.address?.split("/")?.[0] || d.primary_ip4?.address?.split("/")?.[0] || "";
       const name = d.name || d.display || `Device-${d.id}`;
+      let sshPort = null;
 
       // Custom Fields Mapping
       const cf = d.custom_fields || {};
@@ -227,7 +228,6 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       if (!credPassword && defaultCredentials.password) credPassword = defaultCredentials.password;
 
       // Fetch Services (SSH/Telnet ports) from Map
-      let sshPort = null;
       if (d.id) {
         const services = servicesMap.get(d.id);
         if (services?.sshPort) {

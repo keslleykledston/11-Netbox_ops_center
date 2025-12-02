@@ -99,7 +99,9 @@ export async function addNetboxSyncJob(options, userId, tenantId) {
     tenantId,
     startedAt: new Date().toISOString(),
   };
-  const jobId = tenantId ? `netbox-sync:${tenantId}:${Date.now()}` : `netbox-sync:${Date.now()}`;
+  // BullMQ não permite ":" no jobId
+  const safeTenant = tenantId ? String(tenantId).replace(/[:]/g, "_") : "global";
+  const jobId = `netbox-sync-${safeTenant}-${Date.now()}`;
   return await netboxSyncQueue.add('sync', payload, {
     ...defaultJobOptions,
     jobId,

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   proxy:
     image: nginx:latest
@@ -63,7 +61,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: >-
       sh -lc "
-        apt-get update -qq && apt-get install -y -qq docker.io > /dev/null 2>&1 &&
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
         npm --prefix server run start:api
       "

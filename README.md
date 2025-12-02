@@ -12,6 +12,9 @@ Uma plataforma completa de gestão de rede, integrando **NetBox**, monitoramento
 - 🎯 **Multi-tenant**: Isolamento de dados por tenant
 - 🔍 **Diff de Configurações**: Comparação visual entre versões de backup
 - ⚙️ **API REST**: Backend Node.js + Express
+- 📈 **Monitoramento LibreNMS**: Monitoramento SNMP automático de dispositivos
+- 📊 **Dashboards Grafana**: Visualização avançada de métricas de rede
+- 🔍 **Observabilidade**: Métricas Prometheus (`/api/metrics`) e sanitização de logs
 
 ## 🚀 Instalação Rápida
 
@@ -72,14 +75,59 @@ Se já tiver uma instância Oxidized externa:
 2. Nome: `Oxidized`
 3. Configure URL e intervalo de coleta
 
+### 4. Configurar LibreNMS + Grafana (Recomendado)
+
+O NetBox Ops Center inclui integração completa com LibreNMS para monitoramento SNMP:
+
+1. **Acesse o LibreNMS**: `http://SEU_IP:8000`
+   - Usuário: `librenms`
+   - Senha: `librenms` (altere imediatamente!)
+
+2. **Gere um token de API**:
+   - Vá em **My Settings** → **API Settings** → **Create API Token**
+   - Copie o token gerado
+
+3. **Configure o backend**:
+   ```bash
+   cd server
+   nano .env
+   ```
+   Adicione:
+   ```
+   LIBRENMS_URL=http://librenms:8000
+   LIBRENMS_TOKEN=SEU_TOKEN_AQUI
+   AUTO_LIBRENMS_POLL=true
+   ```
+
+4. **Reinicie os containers**:
+   ```bash
+   docker compose restart backend scheduler
+   ```
+
+5. **Acesse o Grafana**: `http://SEU_IP:3033`
+   - Usuário: `admin`
+   - Senha: `admin` (altere no primeiro acesso)
+
+6. **Configure datasource**:
+   - Vá em **Configuration** → **Data Sources** → **Add data source**
+   - Selecione **MySQL**
+   - Host: `librenms-db:3306`
+   - Database: `librenms`
+   - User/Password: `librenms`
+
+**📖 Guia completo**: Veja [LIBRENMS_SETUP_GUIDE.md](LIBRENMS_SETUP_GUIDE.md)
+
 ## 📋 Serviços Disponíveis
 
 | Serviço | Porta/URL | Descrição |
 |---------|-----------|-----------|
 | **App Principal** | `http://IP/` | Interface web principal |
+| **API Backend** | `http://IP/api/` | API REST |
+| **Prometheus Metrics** | `http://IP/api/metrics` | Métricas de observabilidade |
+| **LibreNMS** | `http://IP:8000` | Monitoramento de rede |
+| **Grafana** | `http://IP:3033` | Dashboards e visualização |
 | **Portainer** | `http://IP/portainer/` | Gestão de containers |
 | **Oxidized** | `http://IP/oxidized/` | Interface do Oxidized |
-| **API Backend** | `http://IP/api/` | API REST |
 
 ## 🔄 Atualização
 
@@ -104,26 +152,35 @@ O script verifica a versão no GitHub e atualiza automaticamente.
 2. Se usar NetBox Secrets: cole a chave RSA privada correta
 3. As credenciais usam fallback: Secrets → Custom Fields → **Config da App**
 
-### Banco de dados corrompido
+### Reset do banco de dados PostgreSQL
 
 ```bash
-# Pare o container
-docker stop netbox-ops-center-app
+# Pare todos os containers
+docker compose down
 
-# Delete o banco
-docker exec netbox-ops-center-app rm -f /app/server/prisma/dev.db*
+# Remova o volume do banco (CUIDADO: apaga todos os dados)
+docker volume rm 11-netbox_ops_center_db_data
 
-# Reinicie
-docker start netbox-ops-center-app
+# Reinicie os serviços
+docker compose up -d
+
+# Aguarde a inicialização (~30s) e verifique os logs
+docker logs netbox-ops-center-backend -f
 ```
 
-Depois, recadastre o usuário admin e a aplicação NetBox.
+Depois, recadastre o usuário admin (ou use as credenciais padrão: `admin` / `Ops_pass_`) e configure a aplicação NetBox.
 
 ### Logs para Debug
 
 ```bash
-# Logs do backend
-docker logs netbox-ops-center-app -f
+# Logs do backend (API)
+docker logs netbox-ops-center-backend -f
+
+# Logs do worker (jobs assíncronos)
+docker logs netbox-ops-center-worker -f
+
+# Logs do scheduler
+docker logs netbox-ops-center-scheduler -f
 
 # Logs do Oxidized
 docker logs netbox-ops-center-oxidized -f
@@ -134,10 +191,12 @@ docker logs netbox-ops-center-oxidized -f
 ```
 ├── server/              # Backend Node.js
 │   ├── src/            # Código fonte
-│   │   ├── index.js    # API principal
+│   │   ├── index.js    # API principal (Express + WebSocket)
+│   │   ├── worker.js   # Worker BullMQ (jobs assíncronos)
+│   │   ├── scheduler.js # Scheduler (jobs periódicos)
 │   │   ├── netbox.js   # Integração NetBox
 │   │   └── queues/     # Jobs assíncronos (BullMQ)
-│   ├── prisma/         # Schema do banco SQLite
+│   ├── prisma/         # Schema do banco PostgreSQL
 │   └── debug/          # Scripts de debug (não incluídos no Git)
 ├── src/                # Frontend React + Vite
 ├── docker/             # Dockerfiles
@@ -148,7 +207,7 @@ docker logs netbox-ops-center-oxidized -f
 
 ## 🔐 Segurança
 
-- ⚠️ **Nunca commite** arquivos `.env`, chaves privadas ou `dev.db`
+- ⚠️ **Nunca commite** arquivos `.env`, chaves privadas ou dados sensíveis
 - 🔒 Credenciais são criptografadas no banco (AES-256-GCM)
 - 🛡️ JWT para autenticação da API
 - 📝 Logs de auditoria para ações críticas

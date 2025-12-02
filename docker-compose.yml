@@ -12,7 +12,8 @@ services:
       - portainer
       - oxidized
       - redis
-      - checkmk
+      - librenms
+      - grafana
     networks:
       - netbox-net
     restart: unless-stopped
@@ -49,10 +50,9 @@ services:
       REDIS_URL: redis://redis:6379
       OXIDIZED_API_URL: http://oxidized:8888
       OXIDIZED_ROUTER_DB: /host-oxidized/router.db
-      CHECKMK_URL: http://checkmk:5000/netbox
-      CHECKMK_SITE: netbox
-      CHECKMK_USERNAME: cmkadmin
-      CHECKMK_PASSWORD: ${CHECKMK_PASSWORD:-admin}
+      LIBRENMS_URL: http://librenms:8000
+      LIBRENMS_API_TOKEN: ${LIBRENMS_API_TOKEN:-}
+      AUTO_LIBRENMS_SYNC: ${AUTO_LIBRENMS_SYNC:-true}
       ENABLE_QUEUE_EVENTS: "true"
     volumes:
       - .:/app
@@ -114,6 +114,10 @@ services:
       OXIDIZED_SYNC_INTERVAL_MS: ${OXIDIZED_SYNC_INTERVAL_MS:-900000}
       AUTO_NETBOX_SYNC: ${AUTO_NETBOX_SYNC:-false}
       NETBOX_SYNC_INTERVAL_MS: ${NETBOX_SYNC_INTERVAL_MS:-1800000}
+      LIBRENMS_URL: http://librenms:8000
+      LIBRENMS_API_TOKEN: ${LIBRENMS_API_TOKEN:-}
+      LIBRENMS_POLL_INTERVAL_MS: ${LIBRENMS_POLL_INTERVAL_MS:-300000}
+      AUTO_LIBRENMS_POLL: ${AUTO_LIBRENMS_POLL:-true}
     volumes:
       - .:/app
       - oxidized_config:/host-oxidized
@@ -177,29 +181,126 @@ services:
       - netbox-net
     restart: unless-stopped
 
-  checkmk:
-    image: checkmk/check-mk-raw:latest
-    container_name: netbox-ops-center-checkmk
+  # CheckMK - DEPRECATED (substituído por LibreNMS)
+  # checkmk:
+  #   image: checkmk/check-mk-raw:latest
+  #   container_name: netbox-ops-center-checkmk
+  #   ports:
+  #     - "8080:5000"
+  #   volumes:
+  #     - checkmk_data:/omd/sites
+  #   environment:
+  #     - CMK_SITE_ID=netbox
+  #     - CMK_PASSWORD=${CHECKMK_PASSWORD:-admin}
+  #   networks:
+  #     - netbox-net
+  #   restart: unless-stopped
+  #   tmpfs:
+  #     - /opt/omd/sites/netbox/tmp:uid=1000,gid=1000
+
+  # LibreNMS - Network Monitoring System
+  librenms:
+    image: librenms/librenms:latest
+    container_name: netbox-ops-center-librenms
+    hostname: librenms
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     ports:
-      - "8080:5000"
-    volumes:
-      - checkmk_data:/omd/sites
+      - "8000:8000"
     environment:
-      - CMK_SITE_ID=netbox
-      - CMK_PASSWORD=${CHECKMK_PASSWORD:-admin}
+      - TZ=America/Sao_Paulo
+      - PUID=1000
+      - PGID=1000
+      - DB_HOST=librenms-db
+      - DB_NAME=librenms
+      - DB_USER=librenms
+      - DB_PASSWORD=${LIBRENMS_DB_PASSWORD:-librenms_secure}
+      - DB_TIMEOUT=60
+      - LIBRENMS_SNMP_COMMUNITY=${LIBRENMS_SNMP_COMMUNITY:-public}
+      - LIBRENMS_WEATHERMAP=false
+      - LIBRENMS_SMOKEPING=false
+      - BASE_URL=http://localhost:8000
+    volumes:
+      - librenms_data:/data
+    depends_on:
+      - librenms-db
+      - librenms-redis
     networks:
       - netbox-net
     restart: unless-stopped
-    tmpfs:
-      - /opt/omd/sites/netbox/tmp:uid=1000,gid=1000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v0/system"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  librenms-db:
+    image: mariadb:10.11
+    container_name: netbox-ops-center-librenms-db
+    command:
+      - "mysqld"
+      - "--innodb-file-per-table=1"
+      - "--lower-case-table-names=0"
+      - "--character-set-server=utf8mb4"
+      - "--collation-server=utf8mb4_unicode_ci"
+    environment:
+      - TZ=America/Sao_Paulo
+      - MYSQL_ROOT_PASSWORD=${LIBRENMS_DB_ROOT_PASSWORD:-librenms_root_secure}
+      - MYSQL_DATABASE=librenms
+      - MYSQL_USER=librenms
+      - MYSQL_PASSWORD=${LIBRENMS_DB_PASSWORD:-librenms_secure}
+    volumes:
+      - librenms_db_data:/var/lib/mysql
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  librenms-redis:
+    image: redis:7-alpine
+    container_name: netbox-ops-center-librenms-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - librenms_redis_data:/data
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  # Grafana - Visualization & Dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: netbox-ops-center-grafana
+    ports:
+      - "3033:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-worldmap-panel,grafana-piechart-panel,grafana-clock-panel
+      - GF_SERVER_ROOT_URL=http://localhost:3033
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - netbox-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 volumes:
   portainer_data:
   oxidized_config:
   redis_data:
-  checkmk_data:
+  # checkmk_data:  # DEPRECATED
   ssh_sessions:
   db_data:
+  librenms_data:
+  librenms_db_data:
+  librenms_redis_data:
+  grafana_data:
 
 networks:
   netbox-net:

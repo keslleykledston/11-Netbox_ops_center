@@ -14,7 +14,10 @@ export const QUEUE_NAMES = [
   'credential-check',
   'connectivity-test',
   'ssh-session',
-  'checkmk-sync',
+  // 'checkmk-sync',     // DEPRECATED
+  // 'checkmk-status',   // DEPRECATED
+  'librenms-sync',
+  'librenms-status',
 ];
 
 // Create Redis connection shared by queues
@@ -61,7 +64,10 @@ export const deviceScanQueue = queueFactory('device-scan');
 export const credentialCheckQueue = queueFactory('credential-check', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });
 export const connectivityTestQueue = queueFactory('connectivity-test', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });
 export const sshSessionQueue = queueFactory('ssh-session');
-export const checkmkSyncQueue = queueFactory('checkmk-sync');
+// export const checkmkSyncQueue = queueFactory('checkmk-sync');  // DEPRECATED
+// export const checkmkStatusQueue = queueFactory('checkmk-status', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });  // DEPRECATED
+export const libreNmsSyncQueue = queueFactory('librenms-sync');
+export const libreNmsStatusQueue = queueFactory('librenms-status', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });
 
 const queueMap = new Map([
   ['netbox-sync', netboxSyncQueue],
@@ -72,7 +78,10 @@ const queueMap = new Map([
   ['credential-check', credentialCheckQueue],
   ['connectivity-test', connectivityTestQueue],
   ['ssh-session', sshSessionQueue],
-  ['checkmk-sync', checkmkSyncQueue],
+  // ['checkmk-sync', checkmkSyncQueue],      // DEPRECATED
+  // ['checkmk-status', checkmkStatusQueue],  // DEPRECATED
+  ['librenms-sync', libreNmsSyncQueue],
+  ['librenms-status', libreNmsStatusQueue],
 ]);
 
 const ENABLE_QUEUE_EVENTS = (process.env.ENABLE_QUEUE_EVENTS ?? 'true').toLowerCase() !== 'false';
@@ -203,6 +212,36 @@ export async function addCheckmkSyncJob(action, deviceId, deviceData, userId) {
   });
 }
 
+// DEPRECATED - CheckMK functions
+// export async function addCheckmkSyncJob(action, deviceId, deviceData, userId) { ... }
+// export async function addCheckmkStatusJob() { ... }
+
+// LibreNMS Sync Job
+export async function addLibreNmsSyncJob(action, deviceId, device, userId) {
+  return await libreNmsSyncQueue.add('sync', {
+    action, // 'add', 'update', 'delete'
+    deviceId,
+    device,
+    userId,
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    jobId: `librenms-${action}-${deviceId}-${Date.now()}`,
+  });
+}
+
+// LibreNMS Status Poll Job
+export async function addLibreNmsStatusJob() {
+  return await libreNmsStatusQueue.add('status-poll', {
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    attempts: 2,
+    jobId: `librenms-status-${Date.now()}`,
+    removeOnComplete: { age: 3600, count: 10 },
+  });
+}
+
 // Get job status
 export async function getJobStatus(queueName, jobId) {
   const queue = getQueue(queueName);
@@ -244,6 +283,11 @@ export async function getQueueJobs(queueName, status = 'active', start = 0, end 
   })));
 }
 
+// Get all queues for metrics collection
+export function getAllQueues() {
+  return queueMap;
+}
+
 // Graceful shutdown
 export async function closeQueues() {
   await Promise.all([
@@ -255,7 +299,10 @@ export async function closeQueues() {
     credentialCheckQueue.close(),
     connectivityTestQueue.close(),
     sshSessionQueue.close(),
-    checkmkSyncQueue.close(),
+    // checkmkSyncQueue.close(),     // DEPRECATED
+    // checkmkStatusQueue.close(),   // DEPRECATED
+    libreNmsSyncQueue.close(),
+    libreNmsStatusQueue.close(),
   ]);
   await closeQueueEventBridge();
   await connection.quit();

@@ -147,7 +147,7 @@ main() {
   info "API_SERVER_URL=${API_SERVER_URL:-http://localhost:4000}"
   info "SNMP_SERVER_URL=${SNMP_SERVER_URL:-http://localhost:3001}"
   info "NETBOX_TENANT_GROUP_FILTER=${NETBOX_TENANT_GROUP_FILTER:-(not set)}"
-  info "PORT=${PORT:-4000} DATABASE_URL=${DATABASE_URL:-sqlite dev.db}"
+  info "PORT=${PORT:-4000} DATABASE_URL=${DATABASE_URL:-postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops}"
 
   check_web
   check_api

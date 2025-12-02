@@ -13,7 +13,7 @@
 - Fila/Cache/Locks: Redis central.
 - Workers: BullMQ (já presente nas dependências) processando jobs pesados; repetir jobs via “repeatable jobs” do BullMQ em vez de cron interno.
 - Automação (gateway tipo Koko): serviço Node dedicado (pode compartilhar a imagem do backend) executando SSH (ssh2), SNMP (net-snmp) e integrações HTTP. Se for necessária automação mais rica (Nornir/Netmiko/NAPALM), subir microserviço Python separado e comunicar via fila/API interna.
-- Banco: PostgreSQL (substituir dev.db local em produção), manter Prisma como ORM.
+- Banco: PostgreSQL (migrado e em produção), mantido Prisma como ORM.
 
 ## Filas, jobs e locks (BullMQ)
 - Filas propostas:
@@ -40,8 +40,10 @@
 - Migração para Kubernetes: deployments separados para `backend`, `worker`, `scheduler`, `automation`; Redis e Postgres gerenciados; ingress para web/api/ws; secrets em Secret/SealedSecret; HPA usando métricas de filas.
 
 ## Próximas ações
-1) Implementar filas BullMQ descritas (estruturas, locks, métricas) e expor `/ws` com eventos de job.
-2) Separar entrypoints de contêiner: `backend` (API/WS) e `worker` (BullMQ), com scheduler repeatable.
-3) Substituir dev.db por PostgreSQL em produção e ajustar envs/docker-compose.
-4) Endurecer segredos (envs separados, lint de logs sem segredos) e adicionar `/metrics` + `/health`.
-5) Decidir se automação SSH/SNMP fica no worker Node ou se cria microserviço Python para Nornir/Netmiko.
+1) ✅ **Concluído**: Implementar filas BullMQ descritas (estruturas, locks, métricas) e expor `/ws` com eventos de job.
+2) ✅ **Concluído**: Separar entrypoints de contêiner: `backend` (API/WS), `worker` (BullMQ) e `scheduler` (repeatable jobs).
+3) ✅ **Concluído**: Substituir dev.db por PostgreSQL em produção e ajustar envs/docker-compose.
+4) 🔄 **Em andamento**: Endurecer segredos (envs separados, lint de logs sem segredos) e adicionar `/metrics` + `/health`.
+5) 🔄 **Em avaliação**: Decidir se automação SSH/SNMP fica no worker Node ou se cria microserviço Python para Nornir/Netmiko.
+6) 🆕 **Novo**: Reabilitar integração CheckMK de forma assíncrona (atualmente desabilitada por timeout).
+7) 🆕 **Novo**: Implementar métricas Prometheus (`/metrics`) para observabilidade de filas e jobs.

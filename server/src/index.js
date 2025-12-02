@@ -18,14 +18,18 @@ import {
   addCredentialCheckJob,
   addConnectivityTestJob,
   addCheckmkSyncJob,
+  addLibreNmsSyncJob,
   getJobStatus,
   getQueueJobs,
   closeQueues,
+  getAllQueues,
   QUEUE_NAMES,
 } from "./queues/index.js";
 import { subscribeJobEvents, unsubscribeJobEvents } from "./queues/events.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
+import { getMetrics, httpMetricsMiddleware, startMetricsCollection } from "./modules/observability/metrics.js";
+import { createSafeLogger } from "./modules/observability/log-sanitizer.js";
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -38,6 +42,9 @@ expressWs(app);
 
 app.use(cors());
 app.use(express.json());
+
+// Prometheus metrics middleware (track all HTTP requests)
+app.use(httpMetricsMiddleware);
 
 const PORT = process.env.PORT || 4000;
 const JWT_SECRET = process.env.JWT_SECRET || "dev_secret";
@@ -174,6 +181,11 @@ async function bootstrapBackground() {
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
+
+  // Start Prometheus metrics collection (every 15s)
+  const queueMap = getAllQueues();
+  startMetricsCollection({ queueMap, prisma, interval: 15000 });
+  console.log('[METRICS] Started metrics collection');
 }
 
 async function logAudit(req, action, detailsObj) {
@@ -285,8 +297,42 @@ async function enqueueCheckmkSync(action, device, userId) {
   }
 }
 
+async function enqueueLibreNmsSync(action, device, userId) {
+  if (!device) return;
+  if (!device.monitoringEnabled) return; // Only sync if monitoring is enabled
+  try {
+    const payload = {
+      id: device.id,
+      name: device.name,
+      hostname: device.hostname || device.name,
+      ipAddress: device.ipAddress,
+      deviceType: device.deviceType,
+      manufacturer: device.manufacturer,
+      model: device.model,
+      snmpVersion: device.snmpVersion,
+      snmpCommunity: device.snmpCommunity,
+      snmpPort: device.snmpPort || 161,
+    };
+    await addLibreNmsSyncJob(action, device.id, payload, userId || null);
+  } catch (err) {
+    console.warn('[LIBRENMS][WARN] Falha ao enfileirar job:', err?.message || err);
+  }
+}
+
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
+});
+
+// Prometheus metrics endpoint
+app.get("/metrics", async (_req, res) => {
+  try {
+    const metrics = await getMetrics();
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.send(metrics);
+  } catch (err) {
+    console.error('[METRICS] Failed to generate metrics:', err);
+    res.status(500).send('Failed to generate metrics');
+  }
 });
 
 app.post("/auth/register", async (req, res) => {
@@ -364,11 +410,15 @@ app.get('/auth/default-admin-hint', async (_req, res) => {
 app.get("/devices", requireAuth, async (req, res) => {
   const where = buildDeviceWhere(req);
   const list = await prisma.device.findMany({ where, orderBy: { id: "desc" } });
-  // Skip Checkmk lookup to avoid timeouts for large lists; enable via future flag if needed.
-  const monitoringMap = {};
+
+  // CheckMK status is now read from database (updated by background job)
+  // No blocking HTTP calls to CheckMK, fast response
   const enriched = list.map((device) => ({
     ...sanitizeDeviceOutput(device),
-    monitoring: monitoringMap[device.name] || null,
+    monitoring: device.checkmkStatus ? {
+      state: device.checkmkStatus,
+      lastCheck: device.lastCheckmkCheck,
+    } : null,
   }));
   res.json(enriched);
 });
@@ -425,6 +475,7 @@ app.post("/devices", requireAuth, async (req, res) => {
     username, // credentials
     password, // credentials
     backupEnabled = false,
+    monitoringEnabled = false,
     oxidizedProxyId = null,
   } = req.body || {};
 
@@ -447,6 +498,7 @@ app.post("/devices", requireAuth, async (req, res) => {
       snmpPort: snmpPort ? Number(snmpPort) : null,
       sshPort: sshPort ? Number(sshPort) : null,
       backupEnabled: !!backupEnabled,
+      monitoringEnabled: !!monitoringEnabled,
       oxidizedProxyId: oxidizedProxyId ? Number(oxidizedProxyId) : null,
     };
 
@@ -474,6 +526,9 @@ app.post("/devices", requireAuth, async (req, res) => {
         console.warn('[OXIDIZED] Failed to notify proxies on device create:', err);
       });
     }
+
+    // Adicionar dispositivo ao LibreNMS se monitoramento estiver habilitado
+    enqueueLibreNmsSync('add', device, req.user?.sub).catch(() => { });
 
     res.status(201).json(sanitizeDeviceOutput(device));
   } catch (e) {
@@ -506,6 +561,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
     username,
     password,
     backupEnabled,
+    monitoringEnabled,
     oxidizedProxyId,
   } = req.body || {};
 
@@ -522,6 +578,7 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
   if (snmpPort !== undefined) data.snmpPort = snmpPort ? Number(snmpPort) : null;
   if (sshPort !== undefined) data.sshPort = sshPort ? Number(sshPort) : null;
   if (backupEnabled !== undefined) data.backupEnabled = !!backupEnabled;
+  if (monitoringEnabled !== undefined) data.monitoringEnabled = !!monitoringEnabled;
   if (oxidizedProxyId !== undefined) data.oxidizedProxyId = oxidizedProxyId ? Number(oxidizedProxyId) : null;
 
   if (username !== undefined) data.credUsername = username;
@@ -548,6 +605,12 @@ app.patch("/devices/:id", requireAuth, async (req, res) => {
       });
     }
 
+    // Atualizar dispositivo no LibreNMS se houve mudanças relevantes
+    const shouldSyncLibreNms = ipAddress || name || hostname || snmpVersion || snmpCommunity || snmpPort || monitoringEnabled !== undefined;
+    if (shouldSyncLibreNms) {
+      enqueueLibreNmsSync('update', updated, req.user?.sub).catch(() => { });
+    }
+
     res.json(sanitizeDeviceOutput(await prisma.device.findUnique({ where: { id } })));
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
@@ -560,6 +623,9 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
   if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
     return res.status(404).json({ error: "Not found" });
   }
+  // Remover do LibreNMS antes de deletar do banco
+  enqueueLibreNmsSync('delete', device, req.user?.sub).catch(() => { });
+
   await prisma.device.delete({ where: { id } });
   if (device.backupEnabled) {
     await syncRouterDbFromDb();
@@ -568,7 +634,8 @@ app.delete("/devices/:id", requireAuth, async (req, res) => {
       console.warn('[OXIDIZED] Failed to notify proxies on device delete:', err);
     });
   }
-  enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => { });
+  // DEPRECATED: CheckMK integration replaced by LibreNMS
+  // enqueueCheckmkSync('delete', device, req.user?.sub).catch(() => { });
   res.status(204).send();
 });
 
@@ -2434,14 +2501,29 @@ app.get('/health/services', async (_req, res) => {
 
   // Check Queues (workers running)
   try {
-    // Import connection from queues
-    const { getQueueJobs } = await import('./queues/index.js');
-    const jobs = await getQueueJobs('netbox-sync', 'waiting', 0, 1).catch(() => []);
+    const queueMap = getAllQueues();
+    const queueStats = {};
+
+    for (const [queueName, queue] of queueMap) {
+      try {
+        const counts = await queue.getJobCounts('waiting', 'active', 'completed', 'failed', 'delayed');
+        queueStats[queueName] = {
+          waiting: counts.waiting || 0,
+          active: counts.active || 0,
+          failed: counts.failed || 0,
+          delayed: counts.delayed || 0,
+        };
+      } catch (err) {
+        queueStats[queueName] = { error: err.message };
+      }
+    }
+
     services.queues.status = 'ok';
-    services.queues.workers = 7; // netbox-sync, oxidized-sync, snmp-discovery, snmp-polling, device-scan, credential-check, connectivity-test
-    services.queues.sample = jobs.length;
-  } catch {
+    services.queues.total = queueMap.size;
+    services.queues.stats = queueStats;
+  } catch (err) {
     services.queues.status = 'error';
+    services.queues.error = err.message;
   }
 
   // Overall health

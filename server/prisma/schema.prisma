@@ -75,6 +75,12 @@ model Device {
   lastSnmpOk    DateTime?
   sshStatus     String?  // "ok", "error", "auth_error", "timeout", "unknown"
   lastSshOk     DateTime?
+  // checkmkStatus String?  // DEPRECATED - substituído por libreNmsStatus
+  // lastCheckmkCheck DateTime?  // DEPRECATED
+  libreNmsId    Int?     // ID do device no LibreNMS
+  libreNmsStatus String?  // "up", "down", "disabled", "ignored"
+  lastLibreNmsCheck DateTime?
+  libreNmsUptime Int?     // Uptime em segundos
   oxidizedProxyId Int?
   oxidizedProxy   OxidizedProxy? @relation(fields: [oxidizedProxyId], references: [id])
   discoveredInterfaces DiscoveredInterface[]

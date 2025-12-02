@@ -51,19 +51,40 @@ else
     
     # 0. Backup Database
     log "0. Creating database backup..."
-    DB_FILE="server/dev.db"
     BACKUP_DIR="backups"
-    
-    if [ -f "$DB_FILE" ]; then
-        mkdir -p "$BACKUP_DIR"
-        BACKUP_NAME="dev_backup_$(date '+%Y%m%d_%H%M%S').db"
-        cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
-        log "${GREEN}Database backed up to $BACKUP_DIR/$BACKUP_NAME${NC}"
-        
-        # Keep only last 5 backups
-        ls -t "$BACKUP_DIR"/*.db | tail -n +6 | xargs -I {} rm -- {} 2>/dev/null
+    mkdir -p "$BACKUP_DIR"
+
+    # Load envs if present
+    if [ -f server/.env ]; then
+        set -a
+        # shellcheck disable=SC1091
+        . server/.env
+        set +a
+    fi
+
+    DB_URL="${DATABASE_URL:-}"
+    if [[ "$DB_URL" == postgresql* ]]; then
+        if command -v pg_dump >/dev/null 2>&1; then
+            BACKUP_NAME="pg_backup_$(date '+%Y%m%d_%H%M%S').sql"
+            if PGCONNECT_TIMEOUT=5 pg_dump "$DB_URL" > "$BACKUP_DIR/$BACKUP_NAME" 2>/dev/null; then
+                log "${GREEN}PostgreSQL backup created at $BACKUP_DIR/$BACKUP_NAME${NC}"
+            else
+                log "${YELLOW}Warning: pg_dump failed. Skipping DB backup.${NC}"
+            fi
+        else
+            log "${YELLOW}pg_dump not found; skipping PostgreSQL backup.${NC}"
+        fi
     else
-        log "${YELLOW}Warning: Database file $DB_FILE not found. Skipping backup.${NC}"
+        DB_FILE="server/dev.db"
+        if [ -f "$DB_FILE" ]; then
+            BACKUP_NAME="dev_backup_$(date '+%Y%m%d_%H%M%S').db"
+            cp "$DB_FILE" "$BACKUP_DIR/$BACKUP_NAME"
+            log "${GREEN}SQLite backup to $BACKUP_DIR/$BACKUP_NAME${NC}"
+            # Keep only last 5 backups
+            ls -t "$BACKUP_DIR"/*.db | tail -n +6 | xargs -I {} rm -- {} 2>/dev/null
+        else
+            log "${YELLOW}Warning: Database not found for backup.${NC}"
+        fi
     fi
     
     # Pull changes

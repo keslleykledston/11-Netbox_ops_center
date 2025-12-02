@@ -132,9 +132,10 @@ setup_environment() {
             success "Created server/.env from example."
         else
              cat > server/.env <<EOF
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops"
 PORT=4000
 JWT_SECRET=$(openssl rand -hex 32)
+REDIS_URL="redis://redis:6379"
 EOF
             success "Created server/.env with generated secret."
         fi

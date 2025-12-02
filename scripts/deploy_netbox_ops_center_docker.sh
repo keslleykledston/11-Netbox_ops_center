@@ -7,7 +7,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/keslleykledston/11-Netbox_ops_center.git"
 DEFAULT_APP_DIR="/opt/netbox-ops-center"
-DEFAULT_HTTP_PORT=58080
+DEFAULT_HTTP_PORT=80
 APP_USER="netboxops"
 PORTAINER_VOLUME="netbox_portainer_data"
 DOCKER_GPG_KEY="/etc/apt/keyrings/docker.asc"
@@ -40,12 +40,7 @@ ask_values() {
   read -rp "Diretório de instalação [${DEFAULT_APP_DIR}]: " APP_DIR
   APP_DIR=${APP_DIR:-$DEFAULT_APP_DIR}
   mkdir -p "$APP_DIR"
-  if [[ $INSTALL_MODE == docker ]]; then
-    read -rp "Porta HTTP externa (${DEFAULT_HTTP_PORT}): " EXTERNAL_PORT
-    EXTERNAL_PORT=${EXTERNAL_PORT:-$DEFAULT_HTTP_PORT}
-  else
-    EXTERNAL_PORT=8080
-  fi
+  EXTERNAL_PORT=${DEFAULT_HTTP_PORT}
 }
 
 ensure_packages() {
@@ -130,7 +125,7 @@ ENVEOF
   mkdir -p "$APP_DIR/server"
   if [[ ! -f "$APP_DIR/server/.env" ]]; then
     cat >"$APP_DIR/server/.env" <<'SENVEOF'
-DATABASE_URL="file:./dev.db"
+DATABASE_URL="postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops"
 PORT=4000
 JWT_SECRET=change_me
 NETBOX_URL=http://localhost:8000
@@ -143,33 +138,7 @@ SENVEOF
   fi
 }
 
-create_compose_file() {
-  cat >"$APP_DIR/$COMPOSE_FILE" <<YAML
-services:
-  app:
-    image: node:20-bullseye
-    container_name: netbox-ops-center-app-1
-    working_dir: /app
-    environment:
-      NODE_ENV: development
-      DATABASE_URL: \${DATABASE_URL:-file:./dev.db}
-      JWT_SECRET: \${JWT_SECRET:-change_me}
-      OXIDIZED_API_URL: \${OXIDIZED_API_URL:-http://host.docker.internal:8888}
-      OXIDIZED_ROUTER_DB: \${OXIDIZED_ROUTER_DB:-/host-oxidized/router.db}
-    volumes:
-      - .:/app
-      - /etc/oxidized:/host-oxidized
-    ports:
-      - "${EXTERNAL_PORT}:8080"
-    command: >-
-      sh -lc "
-        if [ ! -d node_modules ]; then npm install; fi &&
-        if [ ! -d server/node_modules ]; then npm run server:install; fi &&
-        npm run dev:stack
-      "
-    restart: unless-stopped
-YAML
-}
+create_compose_file() { :; }
 
 wait_for_http() {
   local name=$1 url=$2 timeout=${3:-180} elapsed=0

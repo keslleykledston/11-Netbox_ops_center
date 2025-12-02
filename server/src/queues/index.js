@@ -75,9 +75,12 @@ const queueMap = new Map([
   ['checkmk-sync', checkmkSyncQueue],
 ]);
 
-initQueueEvents(QUEUE_NAMES).catch((err) => {
-  console.warn('[QUEUE-EVENTS] Failed to initialize queue events:', err?.message || err);
-});
+const ENABLE_QUEUE_EVENTS = (process.env.ENABLE_QUEUE_EVENTS ?? 'true').toLowerCase() !== 'false';
+if (ENABLE_QUEUE_EVENTS) {
+  initQueueEvents(QUEUE_NAMES).catch((err) => {
+    console.warn('[QUEUE-EVENTS] Failed to initialize queue events:', err?.message || err);
+  });
+}
 
 function getQueue(queueName) {
   const queue = queueMap.get(queueName);

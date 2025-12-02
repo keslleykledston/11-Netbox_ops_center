@@ -155,6 +155,18 @@ export const api = {
   async startDiscoveryJob(deviceId: string | number, type: 'interfaces' | 'peers') {
     return apiFetch(`/devices/${deviceId}/discovery/jobs`, { method: 'POST', body: JSON.stringify({ type }) });
   },
+  async startDeviceScan(deviceId: string | number, reason?: string) {
+    return apiFetch(`/devices/${deviceId}/scan`, { method: 'POST', body: JSON.stringify({ reason }) });
+  },
+  async validateDeviceCredentials(deviceId: string | number, netbox?: { url?: string; token?: string }) {
+    return apiFetch(`/devices/${deviceId}/credentials/validate`, { method: 'POST', body: JSON.stringify({ netboxUrl: netbox?.url, netboxToken: netbox?.token }) });
+  },
+  async testDeviceConnectivity(deviceId: string | number, target?: string, port?: number) {
+    return apiFetch(`/devices/${deviceId}/connectivity`, { method: 'POST', body: JSON.stringify({ target, port }) });
+  },
+  async syncRouterDb(tenantId?: number | string) {
+    return apiFetch(`/backup/routerdb/sync`, { method: 'POST', body: JSON.stringify({ tenantId }) });
+  },
   async getJobStatus(queue: string, jobId: string) {
     return apiFetch(`/queues/${queue}/jobs/${encodeURIComponent(jobId)}`, { method: 'GET' });
   },

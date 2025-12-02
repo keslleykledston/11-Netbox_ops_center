@@ -6,6 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node src/index.js",
+    "start:api": "node src/index.js",
+    "start:worker": "node src/worker.js",
+    "start:scheduler": "node src/scheduler.js",
     "test": "vitest --run",
     "db:push": "prisma db push",
     "db:studio": "prisma studio",

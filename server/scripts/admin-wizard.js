@@ -21,8 +21,8 @@ const projectRoot = resolveProjectRoot();
 dotenv.config({ path: path.resolve(projectRoot, '.env') });
 dotenv.config({ path: path.resolve(projectRoot, 'server/.env') });
 if (!process.env.DATABASE_URL) {
-  const sqlitePath = path.resolve(projectRoot, 'server/dev.db');
-  process.env.DATABASE_URL = `file:${sqlitePath}`;
+  console.warn('[WIZARD][WARN] DATABASE_URL não definido. Usando Postgres local padrão.');
+  process.env.DATABASE_URL = 'postgresql://netbox_ops:netbox_ops@localhost:5432/netbox_ops';
 }
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';

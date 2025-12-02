@@ -14,7 +14,6 @@ import {
   addNetboxSyncJob,
   addOxidizedSyncJob,
   addSnmpDiscoveryJob,
-  addSnmpPollingJob,
   addDeviceScanJob,
   addCredentialCheckJob,
   addConnectivityTestJob,
@@ -25,7 +24,6 @@ import {
   QUEUE_NAMES,
 } from "./queues/index.js";
 import { subscribeJobEvents, unsubscribeJobEvents } from "./queues/events.js";
-import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
 import fs from 'fs/promises';
@@ -37,7 +35,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const prisma = new PrismaClient();
 const app = express();
 expressWs(app);
-startQueueWorkers();
 
 app.use(cors());
 app.use(express.json());
@@ -51,7 +48,7 @@ const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'Ops_pass_'
 
 // Simple startup validation and summary
 (() => {
-  const dbUrl = process.env.DATABASE_URL || "(default in schema: sqlite file:./dev.db)";
+  const dbUrl = process.env.DATABASE_URL || "(default: postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops)";
   const nbUrl = process.env.NETBOX_URL;
   const nbToken = process.env.NETBOX_TOKEN;
   const nbGroup = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
@@ -171,27 +168,12 @@ async function refreshAsnRegistryFromPeers() {
   }
 }
 
-async function scheduleSnmpPolling() {
-  try {
-    const devices = await prisma.device.findMany({ where: { status: 'active' } });
-    for (const device of devices) {
-      await addSnmpPollingJob(device.id).catch(() => { });
-    }
-  } catch (e) {
-    console.warn('[SNMP][WARN] Polling schedule failed:', String(e?.message || e));
-  }
-}
-
 async function bootstrapBackground() {
   await ensureDefaultTenant();
   await ensureDefaultAdminUser();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
-
-  // Schedule SNMP polling
-  scheduleSnmpPolling();
-  setInterval(scheduleSnmpPolling, 300000); // 5 minutes
 }
 
 async function logAudit(req, action, detailsObj) {
@@ -2482,7 +2464,6 @@ async function gracefulShutdown() {
   shuttingDown = true;
   console.log('[SHUTDOWN] Finalizando filas e workers...');
   await closeQueues().catch(() => { });
-  await stopQueueWorkers().catch(() => { });
   await prisma.$disconnect().catch(() => { });
 }
 

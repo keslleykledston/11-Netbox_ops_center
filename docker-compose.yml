@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   proxy:
     image: nginx:latest
@@ -7,7 +9,8 @@ services:
     volumes:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - app
+      - frontend
+      - backend
       - portainer
       - oxidized
       - redis
@@ -16,13 +19,34 @@ services:
       - netbox-net
     restart: unless-stopped
 
-  app:
+  frontend:
     image: node:20-bullseye
-    container_name: netbox-ops-center-app
+    container_name: netbox-ops-center-frontend
     working_dir: /app
     environment:
-      NODE_ENV: development
-      DATABASE_URL: ${DATABASE_URL:-file:./dev.db}
+      - API_SERVER_URL=http://backend:4000
+    volumes:
+      - .:/app
+    command: >-
+      sh -lc "
+        apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1 &&
+        if [ ! -d node_modules ]; then npm install; fi &&
+        npm run dev -- --host 0.0.0.0 --port 8080
+      "
+    expose:
+      - "8080"
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  backend:
+    image: node:20-bullseye
+    container_name: netbox-ops-center-backend
+    working_dir: /app
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: ${DATABASE_URL:-postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops}
       JWT_SECRET: ${JWT_SECRET:-change_me}
       REDIS_URL: redis://redis:6379
       OXIDIZED_API_URL: http://oxidized:8888
@@ -31,18 +55,79 @@ services:
       CHECKMK_SITE: netbox
       CHECKMK_USERNAME: cmkadmin
       CHECKMK_PASSWORD: ${CHECKMK_PASSWORD:-admin}
+      ENABLE_QUEUE_EVENTS: "true"
     volumes:
       - .:/app
       - oxidized_config:/host-oxidized
       - ssh_sessions:/app/ssh-sessions
-      - /var/run/docker.sock:/var/run/docker.sock:ro  # Read-only access to Docker socket for logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     command: >-
       sh -lc "
         apt-get update -qq && apt-get install -y -qq docker.io > /dev/null 2>&1 &&
-        if [ ! -d node_modules ]; then npm install; fi &&
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
-        npm run dev:stack
+        npm --prefix server run start:api
       "
+    expose:
+      - "4000"
+    depends_on:
+      - db
+      - redis
+      - oxidized
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  worker:
+    image: node:20-bullseye
+    container_name: netbox-ops-center-worker
+    working_dir: /app
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops}
+      JWT_SECRET: ${JWT_SECRET:-change_me}
+      REDIS_URL: redis://redis:6379
+      ENABLE_QUEUE_EVENTS: "false"
+    volumes:
+      - .:/app
+      - oxidized_config:/host-oxidized
+      - ssh_sessions:/app/ssh-sessions
+    command: >-
+      sh -lc "
+        if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        npm --prefix server run start:worker
+      "
+    depends_on:
+      - db
+      - redis
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  scheduler:
+    image: node:20-bullseye
+    container_name: netbox-ops-center-scheduler
+    working_dir: /app
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:-postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops}
+      JWT_SECRET: ${JWT_SECRET:-change_me}
+      REDIS_URL: redis://redis:6379
+      ENABLE_QUEUE_EVENTS: "false"
+      SNMP_POLL_INTERVAL_MS: ${SNMP_POLL_INTERVAL_MS:-300000}
+      OXIDIZED_SYNC_INTERVAL_MS: ${OXIDIZED_SYNC_INTERVAL_MS:-900000}
+      AUTO_NETBOX_SYNC: ${AUTO_NETBOX_SYNC:-false}
+      NETBOX_SYNC_INTERVAL_MS: ${NETBOX_SYNC_INTERVAL_MS:-1800000}
+    volumes:
+      - .:/app
+      - oxidized_config:/host-oxidized
+    command: >-
+      sh -lc "
+        if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        npm --prefix server run start:scheduler
+      "
+    depends_on:
+      - db
+      - redis
     networks:
       - netbox-net
     restart: unless-stopped
@@ -61,7 +146,7 @@ services:
     image: oxidized/oxidized:latest
     container_name: netbox-ops-center-oxidized
     ports:
-      - "8888:8888" # Expose for debugging, but proxy handles it
+      - "8888:8888"
     volumes:
       - oxidized_config:/home/oxidized/.config/oxidized
     environment:
@@ -81,6 +166,19 @@ services:
       - netbox-net
     restart: unless-stopped
     command: redis-server --appendonly yes
+
+  db:
+    image: postgres:16-alpine
+    container_name: netbox-ops-center-db
+    environment:
+      POSTGRES_USER: netbox_ops
+      POSTGRES_PASSWORD: netbox_ops
+      POSTGRES_DB: netbox_ops
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - netbox-net
+    restart: unless-stopped
 
   checkmk:
     image: checkmk/check-mk-raw:latest
@@ -104,6 +202,7 @@ volumes:
   redis_data:
   checkmk_data:
   ssh_sessions:
+  db_data:
 
 networks:
   netbox-net:

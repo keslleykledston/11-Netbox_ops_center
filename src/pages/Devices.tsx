@@ -53,7 +53,8 @@ export default function Devices() {
   const [expandedCards, setExpandedCards] = useState<Set<string>>(new Set());
   const [shouldLoadDevices, setShouldLoadDevices] = useState(false);
   const { tenants, selectedTenantId, setSelectedTenantId, loading: tenantLoading } = useTenantContext();
-  const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(selectedTenantId || undefined, true); // skipInitialLoad = true
+  const tenantFilter = selectedTenantId && selectedTenantId !== "all" ? selectedTenantId : undefined;
+  const { devices, loading, error, deleteDevice, refreshDevices } = useDevices(tenantFilter, true); // skipInitialLoad = true
   const navigate = useNavigate();
   const [configDevice, setConfigDevice] = useState<Device | null>(null);
   const [isConfigDialogOpen, setIsConfigDialogOpen] = useState(false);
@@ -182,15 +183,15 @@ export default function Devices() {
               </div>
               <div className="w-[260px]">
                 <Select
-                  value={selectedTenantId ?? ""}
-                  onValueChange={(v) => setSelectedTenantId(v || null)}
+                  value={selectedTenantId ?? "all"}
+                  onValueChange={(v) => setSelectedTenantId(v === "all" ? null : v)}
                   disabled={tenantLoading || tenants.length === 0}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione o Tenant" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Todos (admin)</SelectItem>
+                    <SelectItem value="all">Todos (admin)</SelectItem>
                     {tenants.map((t) => (
                       <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
                     ))}

@@ -364,14 +364,8 @@ app.get('/auth/default-admin-hint', async (_req, res) => {
 app.get("/devices", requireAuth, async (req, res) => {
   const where = buildDeviceWhere(req);
   const list = await prisma.device.findMany({ where, orderBy: { id: "desc" } });
-  let monitoringMap = {};
-  if (isCheckmkAvailable()) {
-    try {
-      monitoringMap = await getHostsStatus(list.map((d) => d.name));
-    } catch (err) {
-      console.warn('[CHECKMK][WARN] status lookup failed:', err?.message || err);
-    }
-  }
+  // Skip Checkmk lookup to avoid timeouts for large lists; enable via future flag if needed.
+  const monitoringMap = {};
   const enriched = list.map((device) => ({
     ...sanitizeDeviceOutput(device),
     monitoring: monitoringMap[device.name] || null,

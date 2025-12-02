@@ -60,8 +60,8 @@ export default function Devices() {
 
   // Control when to load devices
   useEffect(() => {
-    // Load if: has 2+ search chars (global) OR tenant is selected
-    const shouldLoad = searchTerm.length >= 2 || selectedTenantId !== null;
+    // Load if: has 2+ search chars (global) OR tenant is selected (or admin com "todos")
+    const shouldLoad = searchTerm.length >= 2 || selectedTenantId !== null || tenants.length > 0;
     setShouldLoadDevices(shouldLoad && !tenantLoading);
 
     if (shouldLoad && !tenantLoading) {
@@ -181,11 +181,16 @@ export default function Devices() {
                 />
               </div>
               <div className="w-[260px]">
-                <Select value={selectedTenantId || ""} onValueChange={(v) => setSelectedTenantId(v)} disabled={tenantLoading || tenants.length === 0}>
+                <Select
+                  value={selectedTenantId ?? ""}
+                  onValueChange={(v) => setSelectedTenantId(v || null)}
+                  disabled={tenantLoading || tenants.length === 0}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione o Tenant" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="">Todos (admin)</SelectItem>
                     {tenants.map((t) => (
                       <SelectItem key={t.id} value={String(t.id)}>{t.name}</SelectItem>
                     ))}

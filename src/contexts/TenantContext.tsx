@@ -61,8 +61,8 @@ export function TenantProvider({ children }: { children: React.ReactNode }) {
           const validSaved = tenantList.find((t) => String(t.id) === saved);
           if (validSaved) {
             initialTenant = String(validSaved.id);
-          } else if (tenantList[0]) {
-            initialTenant = String(tenantList[0].id);
+          } else {
+            initialTenant = null; // admin vê todos por padrão
           }
         }
         setSelectedTenantIdState(initialTenant);

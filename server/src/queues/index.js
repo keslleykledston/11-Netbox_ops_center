@@ -1,10 +1,23 @@
 // Queue Infrastructure
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
+import { initQueueEvents, closeQueueEvents as closeQueueEventBridge } from './events.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
-// Create Redis connection
+export const QUEUE_NAMES = [
+  'netbox-sync',
+  'oxidized-sync',
+  'snmp-discovery',
+  'snmp-polling',
+  'device-scan',
+  'credential-check',
+  'connectivity-test',
+  'ssh-session',
+  'checkmk-sync',
+];
+
+// Create Redis connection shared by queues
 export const connection = new Redis(REDIS_URL, {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
@@ -25,7 +38,7 @@ export const defaultJobOptions = {
   },
   removeOnComplete: {
     age: 3600, // 1 hour
-    count: 100,
+    count: 200,
   },
   removeOnFail: {
     age: 86400, // 24 hours
@@ -33,16 +46,47 @@ export const defaultJobOptions = {
   },
 };
 
+const queueFactory = (name, options = {}) => new Queue(name, {
+  connection,
+  defaultJobOptions,
+  ...options,
+});
+
 // Define queues
-export const netboxSyncQueue = new Queue('netbox-sync', { connection });
-export const snmpDiscoveryQueue = new Queue('snmp-discovery', { connection });
-export const snmpPollingQueue = new Queue('snmp-polling', { connection });
-export const sshSessionQueue = new Queue('ssh-session', { connection });
-export const checkmkSyncQueue = new Queue('checkmk-sync', { connection });
+export const netboxSyncQueue = queueFactory('netbox-sync');
+export const oxidizedSyncQueue = queueFactory('oxidized-sync');
+export const snmpDiscoveryQueue = queueFactory('snmp-discovery');
+export const snmpPollingQueue = queueFactory('snmp-polling', { defaultJobOptions: { ...defaultJobOptions, attempts: 1 } });
+export const deviceScanQueue = queueFactory('device-scan');
+export const credentialCheckQueue = queueFactory('credential-check', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });
+export const connectivityTestQueue = queueFactory('connectivity-test', { defaultJobOptions: { ...defaultJobOptions, attempts: 2 } });
+export const sshSessionQueue = queueFactory('ssh-session');
+export const checkmkSyncQueue = queueFactory('checkmk-sync');
+
+const queueMap = new Map([
+  ['netbox-sync', netboxSyncQueue],
+  ['oxidized-sync', oxidizedSyncQueue],
+  ['snmp-discovery', snmpDiscoveryQueue],
+  ['snmp-polling', snmpPollingQueue],
+  ['device-scan', deviceScanQueue],
+  ['credential-check', credentialCheckQueue],
+  ['connectivity-test', connectivityTestQueue],
+  ['ssh-session', sshSessionQueue],
+  ['checkmk-sync', checkmkSyncQueue],
+]);
+
+initQueueEvents(QUEUE_NAMES).catch((err) => {
+  console.warn('[QUEUE-EVENTS] Failed to initialize queue events:', err?.message || err);
+});
+
+function getQueue(queueName) {
+  const queue = queueMap.get(queueName);
+  if (!queue) throw new Error(`Unknown queue: ${queueName}`);
+  return queue;
+}
 
 // Helper function to add jobs
 export async function addNetboxSyncJob(options, userId, tenantId) {
-  // ... (keep existing)
   const payload = {
     resources: options?.resources || ['tenants', 'devices'],
     url: options?.url || null,
@@ -52,9 +96,23 @@ export async function addNetboxSyncJob(options, userId, tenantId) {
     tenantId,
     startedAt: new Date().toISOString(),
   };
+  const jobId = tenantId ? `netbox-sync:${tenantId}:${Date.now()}` : `netbox-sync:${Date.now()}`;
   return await netboxSyncQueue.add('sync', payload, {
     ...defaultJobOptions,
-    jobId: `netbox-sync-${Date.now()}`,
+    jobId,
+  });
+}
+
+export async function addOxidizedSyncJob(tenantId = null, userId = null) {
+  const payload = {
+    tenantId,
+    userId,
+    startedAt: new Date().toISOString(),
+  };
+  const jobId = tenantId ? `oxidized-sync:${tenantId}:${Date.now()}` : `oxidized-sync:${Date.now()}`;
+  return await oxidizedSyncQueue.add('sync', payload, {
+    ...defaultJobOptions,
+    jobId,
   });
 }
 
@@ -82,8 +140,52 @@ export async function addSnmpPollingJob(deviceId) {
   });
 }
 
+export async function addDeviceScanJob(deviceId, userId, tenantId, reason = 'manual') {
+  return await deviceScanQueue.add('scan', {
+    deviceId,
+    userId,
+    tenantId,
+    reason,
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    jobId: `device-scan:${deviceId}:${Date.now()}`,
+    removeOnComplete: { age: 600, count: 200 },
+  });
+}
+
+export async function addCredentialCheckJob(deviceId, userId, tenantId, netboxConfig = null) {
+  return await credentialCheckQueue.add('validate', {
+    deviceId,
+    userId,
+    tenantId,
+    netboxConfig,
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    jobId: `credential-check:${deviceId}:${Date.now()}`,
+    removeOnComplete: { age: 1800, count: 200 },
+  });
+}
+
+export async function addConnectivityTestJob(deviceId, target = null, port = null, userId = null, tenantId = null) {
+  const jobTarget = target || deviceId;
+  return await connectivityTestQueue.add('test', {
+    deviceId,
+    target,
+    port,
+    userId,
+    tenantId,
+    startedAt: new Date().toISOString(),
+  }, {
+    ...defaultJobOptions,
+    attempts: 2,
+    jobId: `connectivity:${jobTarget}:${port || ''}:${Date.now()}`,
+    removeOnComplete: { age: 900, count: 200 },
+  });
+}
+
 export async function addCheckmkSyncJob(action, deviceId, deviceData, userId) {
-  // ... (keep existing)
   return await checkmkSyncQueue.add('sync', {
     action, // 'add', 'update', 'delete'
     deviceId,
@@ -98,27 +200,7 @@ export async function addCheckmkSyncJob(action, deviceId, deviceData, userId) {
 
 // Get job status
 export async function getJobStatus(queueName, jobId) {
-  let queue;
-  switch (queueName) {
-    case 'netbox-sync':
-      queue = netboxSyncQueue;
-      break;
-    case 'snmp-discovery':
-      queue = snmpDiscoveryQueue;
-      break;
-    case 'snmp-polling':
-      queue = snmpPollingQueue;
-      break;
-    case 'ssh-session':
-      queue = sshSessionQueue;
-      break;
-    case 'checkmk-sync':
-      queue = checkmkSyncQueue;
-      break;
-    default:
-      throw new Error(`Unknown queue: ${queueName}`);
-  }
-
+  const queue = getQueue(queueName);
   const job = await queue.getJob(jobId);
   if (!job) return null;
 
@@ -139,27 +221,7 @@ export async function getJobStatus(queueName, jobId) {
 
 // Get all jobs for a queue
 export async function getQueueJobs(queueName, status = 'active', start = 0, end = 10) {
-  let queue;
-  switch (queueName) {
-    case 'netbox-sync':
-      queue = netboxSyncQueue;
-      break;
-    case 'snmp-discovery':
-      queue = snmpDiscoveryQueue;
-      break;
-    case 'snmp-polling':
-      queue = snmpPollingQueue;
-      break;
-    case 'ssh-session':
-      queue = sshSessionQueue;
-      break;
-    case 'checkmk-sync':
-      queue = checkmkSyncQueue;
-      break;
-    default:
-      throw new Error(`Unknown queue: ${queueName}`);
-  }
-
+  const queue = getQueue(queueName);
   const jobs = await queue.getJobs([status], start, end);
 
   return Promise.all(jobs.map(async (job) => ({
@@ -181,10 +243,15 @@ export async function getQueueJobs(queueName, status = 'active', start = 0, end 
 export async function closeQueues() {
   await Promise.all([
     netboxSyncQueue.close(),
+    oxidizedSyncQueue.close(),
     snmpDiscoveryQueue.close(),
     snmpPollingQueue.close(),
+    deviceScanQueue.close(),
+    credentialCheckQueue.close(),
+    connectivityTestQueue.close(),
     sshSessionQueue.close(),
     checkmkSyncQueue.close(),
-    connection.quit(),
   ]);
+  await closeQueueEventBridge();
+  await connection.quit();
 }

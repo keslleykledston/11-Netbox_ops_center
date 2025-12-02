@@ -10,7 +10,21 @@ import { getNetboxCatalog } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
 import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus, getOxidizedDiff, getOxidizedContent, getLatestOxidizedVersionTimes } from "./modules/monitor/oxidized-service.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
-import { addNetboxSyncJob, addSnmpDiscoveryJob, addSnmpPollingJob, addCheckmkSyncJob, getJobStatus, getQueueJobs, closeQueues } from "./queues/index.js";
+import {
+  addNetboxSyncJob,
+  addOxidizedSyncJob,
+  addSnmpDiscoveryJob,
+  addSnmpPollingJob,
+  addDeviceScanJob,
+  addCredentialCheckJob,
+  addConnectivityTestJob,
+  addCheckmkSyncJob,
+  getJobStatus,
+  getQueueJobs,
+  closeQueues,
+  QUEUE_NAMES,
+} from "./queues/index.js";
+import { subscribeJobEvents, unsubscribeJobEvents } from "./queues/events.js";
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
@@ -654,6 +668,57 @@ app.post('/devices/:id/discovery/jobs', requireAuth, async (req, res) => {
   }
 });
 
+// Device scan orchestration (enfileira polling + discovery)
+app.post('/devices/:id/scan', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Device não encontrado' });
+    }
+    const job = await addDeviceScanJob(device.id, req.user?.sub || null, device.tenantId || null, req.body?.reason || 'manual');
+    res.json({ jobId: job.id, queue: 'device-scan' });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Credential validation (NetBox Secrets + fallback)
+app.post('/devices/:id/credentials/validate', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Device não encontrado' });
+    }
+    const netboxConfig = {
+      url: req.body?.netboxUrl || process.env.NETBOX_URL || null,
+      token: req.body?.netboxToken || process.env.NETBOX_TOKEN || null,
+    };
+    const job = await addCredentialCheckJob(device.id, req.user?.sub || null, device.tenantId || null, netboxConfig);
+    res.json({ jobId: job.id, queue: 'credential-check' });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Connectivity test (TCP check)
+app.post('/devices/:id/connectivity', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const device = await prisma.device.findUnique({ where: { id } });
+    if (!device || (req.user.tenantId && device.tenantId !== req.user.tenantId)) {
+      return res.status(404).json({ error: 'Device não encontrado' });
+    }
+    const target = req.body?.target || device.ipAddress;
+    const port = req.body?.port || device.sshPort || 22;
+    const job = await addConnectivityTestJob(device.id, target, port, req.user?.sub || null, device.tenantId || null);
+    res.json({ jobId: job.id, queue: 'connectivity-test' });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // Backup / Oxidized integration endpoints
 app.get('/backup/devices', requireAuth, async (req, res) => {
   const where = buildDeviceWhere(req);
@@ -712,6 +777,18 @@ app.get('/backup/devices', requireAuth, async (req, res) => {
     },
     routerDb: routerDbInfo,
   });
+});
+
+app.post('/backup/routerdb/sync', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin'
+      ? (req.body?.tenantId ? Number(req.body.tenantId) : null)
+      : (req.user.tenantId || null);
+    const job = await addOxidizedSyncJob(tenantId, req.user?.sub || null);
+    res.json({ jobId: job.id, queue: 'oxidized-sync' });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
 });
 
 app.patch('/backup/devices/:id', requireAuth, async (req, res) => {
@@ -1556,12 +1633,51 @@ app.ws('/access/sessions/:id/stream', async (ws, req) => {
   }
 });
 
-const QUEUE_NAMES = new Set(['netbox-sync', 'snmp-discovery', 'checkmk-sync']);
+const KNOWN_QUEUE_NAMES = new Set(QUEUE_NAMES || []);
+
+app.ws('/ws/jobs', (ws, req) => {
+  try {
+    const tokenParam = req.query.token;
+    const token = Array.isArray(tokenParam) ? tokenParam[0] : tokenParam || req.headers.authorization?.split(' ')[1] || null;
+    if (!token) {
+      ws.close(1008, 'Token obrigatório');
+      return;
+    }
+
+    let userPayload = null;
+    try {
+      userPayload = jwt.verify(token, JWT_SECRET);
+    } catch (err) {
+      ws.close(1008, 'Token inválido');
+      return;
+    }
+
+    const queueParam = req.query.queues;
+    const queueList = Array.isArray(queueParam) ? queueParam : (queueParam ? String(queueParam).split(',') : []);
+    const queues = queueList.map((q) => String(q).trim()).filter((q) => q && KNOWN_QUEUE_NAMES.has(q));
+    const jobId = req.query.jobId ? String(req.query.jobId) : null;
+
+    const subscription = subscribeJobEvents(ws, { queues, jobId });
+    try {
+      ws.send(JSON.stringify({
+        event: 'subscribed',
+        queues: Array.from(subscription.queues.values()),
+        jobId: subscription.jobId,
+        user: { id: userPayload?.sub || null, tenantId: userPayload?.tenantId || null },
+      }));
+    } catch { }
+
+    ws.on('close', () => unsubscribeJobEvents(ws));
+    ws.on('error', () => unsubscribeJobEvents(ws));
+  } catch (err) {
+    ws.close(1011, err?.message || 'Erro inesperado');
+  }
+});
 
 app.get('/queues/:queue/jobs/:jobId', requireAuth, async (req, res) => {
   try {
     const queue = String(req.params.queue);
-    if (!QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
+    if (!KNOWN_QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
     const jobId = decodeURIComponent(req.params.jobId);
     const job = await getJobStatus(queue, jobId);
     if (!job) return res.status(404).json({ error: 'Job não encontrado' });
@@ -1574,7 +1690,7 @@ app.get('/queues/:queue/jobs/:jobId', requireAuth, async (req, res) => {
 app.get('/queues/:queue/jobs', requireAuth, async (req, res) => {
   try {
     const queue = String(req.params.queue);
-    if (!QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
+    if (!KNOWN_QUEUE_NAMES.has(queue)) return res.status(400).json({ error: 'Fila desconhecida' });
     const status = String(req.query.status || 'active');
     const start = Number(req.query.start) || 0;
     const end = Number(req.query.end) || 10;
@@ -2344,9 +2460,10 @@ app.get('/health/services', async (_req, res) => {
   try {
     // Import connection from queues
     const { getQueueJobs } = await import('./queues/index.js');
-    const jobs = await getQueueJobs('snmp-discovery', { limit: 1 }).catch(() => []);
+    const jobs = await getQueueJobs('netbox-sync', 'waiting', 0, 1).catch(() => []);
     services.queues.status = 'ok';
-    services.queues.workers = 3; // We have 3 queue workers
+    services.queues.workers = 7; // netbox-sync, oxidized-sync, snmp-discovery, snmp-polling, device-scan, credential-check, connectivity-test
+    services.queues.sample = jobs.length;
   } catch {
     services.queues.status = 'error';
   }

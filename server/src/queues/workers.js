@@ -4,6 +4,10 @@ import { processNetboxSync } from './processors/netbox-sync.js';
 import { processSnmpDiscovery } from './processors/snmp-discovery.js';
 import { processSnmpPolling } from './processors/snmp-polling.js';
 import { processCheckmkSync } from './processors/checkmk-sync.js';
+import { processOxidizedSync } from './processors/oxidized-sync.js';
+import { processDeviceScan } from './processors/device-scan.js';
+import { processCredentialCheck } from './processors/credential-check.js';
+import { processConnectivityTest } from './processors/connectivity-test.js';
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
@@ -17,9 +21,13 @@ export function startQueueWorkers() {
     enableReadyCheck: false,
   });
   workers = [
-    new Worker('netbox-sync', processNetboxSync, { connection }),
-    new Worker('snmp-discovery', processSnmpDiscovery, { connection }),
-    new Worker('snmp-polling', processSnmpPolling, { connection }),
+    new Worker('netbox-sync', processNetboxSync, { connection, concurrency: 2 }),
+    new Worker('oxidized-sync', processOxidizedSync, { connection }),
+    new Worker('snmp-discovery', processSnmpDiscovery, { connection, concurrency: 4 }),
+    new Worker('snmp-polling', processSnmpPolling, { connection, concurrency: 6 }),
+    new Worker('device-scan', processDeviceScan, { connection, concurrency: 4 }),
+    new Worker('credential-check', processCredentialCheck, { connection, concurrency: 2 }),
+    new Worker('connectivity-test', processConnectivityTest, { connection, concurrency: 4 }),
     new Worker('checkmk-sync', processCheckmkSync, { connection }),
   ];
   workers.forEach((worker) => {

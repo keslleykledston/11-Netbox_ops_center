@@ -100,6 +100,8 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
   const result = { tenants: 0, devices: 0 };
   const GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
   let allowedTenants = new Set();
+  const normalize = (str) => String(str || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const normList = (arr) => Array.isArray(arr) ? arr.map(normalize).filter(Boolean) : [];
 
   if (resources.includes("tenants")) {
     const tenants = await fetchList(`${url}/api/tenancy/tenants/?limit=1000`, token);
@@ -130,6 +132,11 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
     // Fetch all services upfront
     const servicesMap = await fetchAllServices(url, token);
 
+    const filterRoles = normList(deviceFilters?.roles);
+    const filterPlatforms = normList(deviceFilters?.platforms);
+    const filterDeviceTypes = normList(deviceFilters?.deviceTypes);
+    const filterSites = normList(deviceFilters?.sites);
+
     const devices = await fetchList(`${url}/api/dcim/devices/?limit=1000`, token);
     for (const d of devices) {
       const tenantName = d.tenant?.name || "NetBox";
@@ -139,25 +146,28 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       }
       // Filtros de função (device role) e plataforma
       const roleName = d.device_role?.name || d.role?.name || null;
+      const roleSlug = d.device_role?.slug || d.role?.slug || null;
       const platformName = d.platform?.name || null;
-      const roles = deviceFilters?.roles;
-      const platforms = deviceFilters?.platforms;
-      const deviceTypes = deviceFilters?.deviceTypes;
-      const sites = deviceFilters?.sites;
-      if (Array.isArray(roles) && roles.length > 0) {
-        if (!roleName || !roles.includes(roleName)) continue;
-      }
-      if (Array.isArray(platforms) && platforms.length > 0) {
-        if (!platformName || !platforms.includes(platformName)) continue;
-      }
-      if (Array.isArray(deviceTypes) && deviceTypes.length > 0) {
-        const typeName = d.device_type?.model || null;
-        if (!typeName || !deviceTypes.includes(typeName)) continue;
-      }
-      if (Array.isArray(sites) && sites.length > 0) {
-        const siteName = d.site?.name || null;
-        if (!siteName || !sites.includes(siteName)) continue;
-      }
+      const platformSlug = d.platform?.slug || null;
+      const typeName = d.device_type?.model || null;
+      const typeSlug = d.device_type?.slug || null;
+      const siteName = d.site?.name || null;
+      const siteSlug = d.site?.slug || null;
+
+      const roleCandidates = normList([roleName, roleSlug]);
+      const platCandidates = normList([platformName, platformSlug]);
+      const typeCandidates = normList([typeName, typeSlug]);
+      const siteCandidates = normList([siteName, siteSlug]);
+
+      const matchAny = (filters, candidates) => {
+        if (!filters.length) return true;
+        return candidates.some((c) => filters.some((f) => f === c || c.includes(f) || f.includes(c)));
+      };
+
+      if (!matchAny(filterRoles, roleCandidates)) continue;
+      if (!matchAny(filterPlatforms, platCandidates)) continue;
+      if (!matchAny(filterDeviceTypes, typeCandidates)) continue;
+      if (!matchAny(filterSites, siteCandidates)) continue;
       // Filter out "Caixa Preta" devices (case insensitive, handles spaces/hyphens)
       if (/caixa[-_\s]*preta/i.test(d.name)) {
         continue;

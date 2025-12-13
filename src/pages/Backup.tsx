@@ -13,7 +13,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
 import { api } from "@/lib/api";
 import { useToast } from "@/hooks/use-toast";
+
 import { useTenantContext } from "@/contexts/TenantContext";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 interface BackupDevice {
   id: number;
@@ -32,6 +34,7 @@ interface BackupDevice {
     lastVersion?: string | null;
   };
   managed: boolean;
+  tenant?: { id: number; name: string } | null;
 }
 
 interface BackupApiResponse {
@@ -98,7 +101,13 @@ export default function Backup() {
   const [integration, setIntegration] = useState<BackupApiResponse["oxidized"]>({ available: true, message: null });
   const [routerDbInfo, setRouterDbInfo] = useState<BackupApiResponse["routerDb"]>({ writable: true, error: null });
 
+
+
   const [togglingId, setTogglingId] = useState<number | null>(null);
+
+  // UI Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [tenantFilter, setTenantFilter] = useState<string>('all');
 
   // Diff state
   const [selectedVersions, setSelectedVersions] = useState<string[]>([]);
@@ -107,7 +116,7 @@ export default function Backup() {
   const [diffContent, setDiffContent] = useState<string | null>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'diff' | 'content'>('diff');
-  const [searchTerm, setSearchTerm] = useState('');
+
   const [artifactInfo, setArtifactInfo] = useState<{ path?: string | null; paths?: string[]; repo?: string | null }>({});
 
   // Logs state
@@ -194,75 +203,136 @@ export default function Backup() {
     }
   };
 
+  const uniqueTenants = Array.from(new Set(devices.map(d => d.tenant?.name).filter(Boolean))).sort();
+
+  const filteredDevices = devices.filter(device => {
+    const matchesSearch =
+      device.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      device.ipAddress.includes(searchTerm) ||
+      (device.tenant?.name || '').toLowerCase().includes(searchTerm.toLowerCase());
+
+    const matchesTenant = tenantFilter === 'all' || device.tenant?.name === tenantFilter;
+
+    return matchesSearch && matchesTenant;
+  });
+
   return (
     <DashboardLayout>
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2"><HardDrive className="h-6 w-6" />Backup</h1>
-            <p className="text-muted-foreground mt-2">Gerencie quais dispositivos serão enviados ao Oxidized para backup diário.</p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={loadData} disabled={loading} className="gap-2">
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-              Atualizar
-            </Button>
-          </div>
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Backup</h1>
+          <p className="text-muted-foreground">Gerencie o backup automático dos dispositivos via Oxidized.</p>
         </div>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={loadData}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+            Atualizar
+          </Button>
+        </div>
+      </div>
 
-        {(!integration.available || !routerDbInfo.writable) && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertTitle>Integração parcial</AlertTitle>
-            <AlertDescription>
-              {!integration.available && (<p>Oxidized API indisponível: {integration.message || 'verifique OXIDIZED_API_URL.'}</p>)}
-              {!routerDbInfo.writable && (<p>Não foi possível atualizar {routerDbInfo.path || 'router.db'}: {routerDbInfo.error || 'verifique permissões.'}</p>)}
-            </AlertDescription>
-          </Alert>
-        )}
-
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 mb-6">
+        {/* Cards remain same */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Dispositivos monitorados</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Dispositivos Configurados</CardTitle>
+            <ShieldCheck className="h-4 w-4 text-emerald-500" />
           </CardHeader>
           <CardContent>
-            <div className="overflow-x-auto">
+            <div className="text-2xl font-bold">{devices.filter(d => d.backupEnabled).length}</div>
+            <p className="text-xs text-muted-foreground">de {devices.length} total</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {integration.available === false && (
+        <Alert variant="destructive" className="mb-6">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertTitle>Oxidized Indisponível</AlertTitle>
+          <AlertDescription>
+            Não foi possível comunicar com o serviço Oxidized. {integration.message && `Erro: ${integration.message}`}
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Filters */}
+      <div className="flex gap-4 mb-4">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-2 top-2.5 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Buscar por nome, IP ou tenant..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-8"
+          />
+        </div>
+        <div className="w-[200px]">
+          <Select value={tenantFilter} onValueChange={setTenantFilter}>
+            <SelectTrigger>
+              <SelectValue placeholder="Filtrar por Tenant" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos os Tenants</SelectItem>
+              {uniqueTenants.map(t => (
+                <SelectItem key={t} value={t as string}>{t}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Dispositivos Monitorados</CardTitle>
+            </CardHeader>
+            <CardContent>
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Dispositivo</TableHead>
                     <TableHead>IP</TableHead>
+                    <TableHead>Tenant</TableHead>
                     <TableHead>Status Oxidized</TableHead>
                     <TableHead>Último backup</TableHead>
-                    <TableHead className="text-center">Habilitar</TableHead>
-                    <TableHead className="text-center">Ações</TableHead>
+                    <TableHead>Habilitar</TableHead>
+                    <TableHead>Ações</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-6">
-                        <Loader2 className="h-5 w-5 animate-spin inline-block mr-2" /> Carregando dispositivos...
+                      <TableCell colSpan={7} className="text-center py-8">
+                        <div className="flex items-center justify-center gap-2">
+                          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                          <span className="text-muted-foreground">Carregando dispositivos...</span>
+                        </div>
                       </TableCell>
                     </TableRow>
-                  ) : devices.length === 0 ? (
+                  ) : filteredDevices.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center py-6 text-muted-foreground">
+                      <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                         Nenhum dispositivo encontrado.
                       </TableCell>
                     </TableRow>
                   ) : (
-                    devices.map((device) => {
-                      const status = statusBadge(device.oxidized?.status);
+                    filteredDevices.map((device) => {
+                      const status = statusBadge(device.oxidized.status);
+                      const isProcessing = togglingId === device.id;
+
                       return (
-                        <TableRow key={device.id} className={selectedDevice?.id === device.id ? 'bg-muted/30' : ''}>
+                        <TableRow key={device.id}>
                           <TableCell>
                             <div className="font-medium">{device.name}</div>
                             <div className="text-xs text-muted-foreground">{device.manufacturer} · {device.model}</div>
                           </TableCell>
                           <TableCell>{device.ipAddress}</TableCell>
                           <TableCell>
-                            <Badge className={status.className}>{status.text}</Badge>
+                            {device.tenant ? <Badge variant="outline">{device.tenant.name}</Badge> : <span className="text-muted-foreground">-</span>}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary" className={status.className}>{status.text}</Badge>
                           </TableCell>
                           <TableCell className="text-[11px] text-muted-foreground leading-tight">
                             <div>Última coleta: {formatOxidizedTimestamp(device.oxidized?.lastRun)}</div>
@@ -291,119 +361,120 @@ export default function Backup() {
                   )}
                 </TableBody>
               </Table>
-            </div>
-          </CardContent>
-        </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Versionamento</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {!selectedDevice ? (
-              <div className="text-muted-foreground text-sm">Selecione um dispositivo para visualizar as versões armazenadas no Oxidized.</div>
-            ) : versionsLoading ? (
-              <div className="flex items-center text-muted-foreground gap-2"><Loader2 className="h-4 w-4 animate-spin" />Carregando versões...</div>
-            ) : versions.length === 0 ? (
-              <div className="flex items-center gap-2 text-muted-foreground">
-                <AlertTriangle className="h-4 w-4" />Nenhum histórico disponível para {selectedDevice.name}.
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <div className="text-sm text-muted-foreground">
-                    Selecione até 2 versões para comparar.
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="default"
-                    disabled={selectedVersions.length === 0 || selectedVersions.length > 2}
-                    onClick={async () => {
-                      if (selectedVersions.length === 0 || !selectedDevice) return;
+            </CardContent>
+          </Card>
 
-                      setDiffModalOpen(true);
-                      setDiffLoading(true);
-                      setSearchTerm('');
-                      setArtifactInfo({});
-
-                      try {
-                        if (selectedVersions.length === 2) {
-                          setViewMode('diff');
-                          const res = await api.getBackupDiff(selectedDevice.name, selectedVersions[1], selectedVersions[0]);
-                          setDiffContent(res?.diff || 'Sem diferenças.');
-                          setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
-                        } else {
-                          setViewMode('content');
-                          const res = await api.getBackupContent(selectedDevice.name, selectedVersions[0]);
-                          setDiffContent(res?.content || 'Conteúdo vazio.');
-                          setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
-                        }
-                      } catch (err) {
-                        setDiffContent('Erro ao carregar: ' + (err instanceof Error ? err.message : String(err)));
-                        setArtifactInfo({});
-                      } finally {
-                        setDiffLoading(false);
-                      }
-                    }}
-                  >
-                    {selectedVersions.length === 2 ? <GitCompare className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
-                    {selectedVersions.length === 2 ? 'Comparar (2)' : 'Visualizar (1)'}
-                  </Button>
+          <Card>
+            <CardHeader>
+              <CardTitle>Versionamento</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {!selectedDevice ? (
+                <div className="text-muted-foreground text-sm">Selecione um dispositivo para visualizar as versões armazenadas no Oxidized.</div>
+              ) : versionsLoading ? (
+                <div className="flex items-center text-muted-foreground gap-2"><Loader2 className="h-4 w-4 animate-spin" />Carregando versões...</div>
+              ) : versions.length === 0 ? (
+                <div className="flex items-center gap-2 text-muted-foreground">
+                  <AlertTriangle className="h-4 w-4" />Nenhum histórico disponível para {selectedDevice.name}.
                 </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-center">
+                    <div className="text-sm text-muted-foreground">
+                      Selecione até 2 versões para comparar.
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="default"
+                      disabled={selectedVersions.length === 0 || selectedVersions.length > 2}
+                      onClick={async () => {
+                        if (selectedVersions.length === 0 || !selectedDevice) return;
 
-                <ScrollArea className="h-60 border rounded-md">
-                  <div className="p-2 space-y-1">
-                    {versions.map((version, index) => {
-                      const oid = version.oid || '';
-                      const isSelected = selectedVersions.includes(oid);
-                      return (
-                        <div
-                          key={`${oid || index}`}
-                          className={`flex items-center justify-between p-2 rounded-md border ${isSelected ? 'bg-primary/10 border-primary' : 'hover:bg-muted'}`}
-                          onClick={() => {
-                            if (!oid) return;
-                            if (isSelected) {
-                              setSelectedVersions(prev => prev.filter(v => v !== oid));
-                            } else {
-                              if (selectedVersions.length < 2) {
-                                setSelectedVersions(prev => [oid, ...prev]); // Add to start
-                              } else {
-                                toast({ title: "Limite atingido", description: "Você só pode selecionar 2 versões para comparar." });
-                              }
-                            }
-                          }}
-                        >
-                          <div className="flex items-center gap-3 cursor-pointer flex-1">
-                            <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground'}`}>
-                              {isSelected && <div className="w-2 h-2 bg-current rounded-full" />}
-                            </div>
-                            <div>
-                              <div className="font-medium text-sm">Versão #{version.num ?? versions.length - index}</div>
-                              <div className="text-xs text-muted-foreground">{version.time || version.date || 'Sem data'}</div>
-                            </div>
-                          </div>
-                          <Badge variant="secondary" className="text-xs">{version.status || 'snapshot'}</Badge>
-                        </div>
-                      );
-                    })}
+                        setDiffModalOpen(true);
+                        setDiffLoading(true);
+                        setSearchTerm('');
+                        setArtifactInfo({});
+
+                        try {
+                          if (selectedVersions.length === 2) {
+                            setViewMode('diff');
+                            const res = await api.getBackupDiff(selectedDevice.name, selectedVersions[1], selectedVersions[0]);
+                            setDiffContent(res?.diff || 'Sem diferenças.');
+                            setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
+                          } else {
+                            setViewMode('content');
+                            const res = await api.getBackupContent(selectedDevice.name, selectedVersions[0]);
+                            setDiffContent(res?.content || 'Conteúdo vazio.');
+                            setArtifactInfo({ path: res?.path, paths: res?.paths, repo: res?.repo });
+                          }
+                        } catch (err) {
+                          setDiffContent('Erro ao carregar: ' + (err instanceof Error ? err.message : String(err)));
+                          setArtifactInfo({});
+                        } finally {
+                          setDiffLoading(false);
+                        }
+                      }}
+                    >
+                      {selectedVersions.length === 2 ? <GitCompare className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+                      {selectedVersions.length === 2 ? 'Comparar (2)' : 'Visualizar (1)'}
+                    </Button>
                   </div>
-                </ScrollArea>
-              </div>
-            )
-            }
-          </CardContent >
-        </Card >
 
-        {
-          devices.some((d) => d.backupEnabled && d.hasCredPassword) && (
-            <Alert>
-              <ShieldCheck className="h-4 w-4" />
-              <AlertTitle>Segurança</AlertTitle>
-              <AlertDescription>As senhas são armazenadas com criptografia forte (AES-256-GCM).</AlertDescription>
-            </Alert>
-          )
-        }
-      </div >
+                  <ScrollArea className="h-60 border rounded-md">
+                    <div className="p-2 space-y-1">
+                      {versions.map((version, index) => {
+                        const oid = version.oid || '';
+                        const isSelected = selectedVersions.includes(oid);
+                        return (
+                          <div
+                            key={`${oid || index}`}
+                            className={`flex items-center justify-between p-2 rounded-md border ${isSelected ? 'bg-primary/10 border-primary' : 'hover:bg-muted'}`}
+                            onClick={() => {
+                              if (!oid) return;
+                              if (isSelected) {
+                                setSelectedVersions(prev => prev.filter(v => v !== oid));
+                              } else {
+                                if (selectedVersions.length < 2) {
+                                  setSelectedVersions(prev => [oid, ...prev]); // Add to start
+                                } else {
+                                  toast({ title: "Limite atingido", description: "Você só pode selecionar 2 versões para comparar." });
+                                }
+                              }
+                            }}
+                          >
+                            <div className="flex items-center gap-3 cursor-pointer flex-1">
+                              <div className={`w-4 h-4 rounded border flex items-center justify-center ${isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground'}`}>
+                                {isSelected && <div className="w-2 h-2 bg-current rounded-full" />}
+                              </div>
+                              <div>
+                                <div className="font-medium text-sm">Versão #{version.num ?? versions.length - index}</div>
+                                <div className="text-xs text-muted-foreground">{version.time || version.date || 'Sem data'}</div>
+                              </div>
+                            </div>
+                            <Badge variant="secondary" className="text-xs">{version.status || 'snapshot'}</Badge>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </ScrollArea>
+                </div>
+              )
+              }
+            </CardContent >
+          </Card >
+
+          {
+            devices.some((d) => d.backupEnabled && d.hasCredPassword) && (
+              <Alert>
+                <ShieldCheck className="h-4 w-4" />
+                <AlertTitle>Segurança</AlertTitle>
+                <AlertDescription>As senhas são armazenadas com criptografia forte (AES-256-GCM).</AlertDescription>
+              </Alert>
+            )
+          }
+        </div>
+      </div>
 
       {/* Diff/Content Modal */}
       <Dialog open={diffModalOpen} onOpenChange={setDiffModalOpen}>
@@ -515,11 +586,10 @@ export default function Backup() {
                   return (
                     <div
                       key={log.id || index}
-                      className={`p-4 rounded-lg border ${
-                        isSuccess ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800' :
+                      className={`p-4 rounded-lg border ${isSuccess ? 'bg-green-50 dark:bg-green-950/20 border-green-200 dark:border-green-800' :
                         isFailed ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-800' :
-                        'bg-muted/50'
-                      }`}
+                          'bg-muted/50'
+                        }`}
                     >
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-start gap-3 flex-1">
@@ -537,8 +607,8 @@ export default function Backup() {
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="font-medium text-sm">
                                 {log.event === 'backup_success' ? 'Backup realizado com sucesso' :
-                                 log.event === 'backup_fail' ? 'Falha no backup' :
-                                 log.event}
+                                  log.event === 'backup_fail' ? 'Falha no backup' :
+                                    log.event}
                               </span>
 
                               {log.hasChanges !== undefined && (

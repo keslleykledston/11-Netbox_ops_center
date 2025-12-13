@@ -25,7 +25,7 @@ function sanitizeField(value) {
         .trim();
 }
 
-function guessModel(device) {
+export function guessModel(device) {
     const model = String(device.model || '').toLowerCase();
     const vendor = String(device.manufacturer || '').toLowerCase();
     if (model.includes('vrp') || vendor.includes('huawei')) return 'vrp';
@@ -176,6 +176,12 @@ input:
   ssh:
     secure: false
     keepalive: false
+    auth_methods: ["none", "publickey", "password", "keyboard-interactive"]
+    vars:
+      ssh_kex: diffie-hellman-group1-sha1,diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1,diffie-hellman-group-exchange-sha256,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521
+      ssh_host_key: ssh-rsa,ssh-dss,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ed25519
+      ssh_hmac: hmac-sha1,hmac-sha1-96,hmac-sha2-256,hmac-sha2-512,hmac-md5,hmac-md5-96
+      ssh_cipher: aes128-cbc,aes192-cbc,aes256-cbc,aes128-ctr,aes192-ctr,aes256-ctr,3des-cbc
 output:
   default: git
   git:

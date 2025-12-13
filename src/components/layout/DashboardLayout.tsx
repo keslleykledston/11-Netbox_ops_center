@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal, Layers } from "lucide-react";
+import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal, Layers, Globe, Database } from "lucide-react";
 import { getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import IdleSessionManager from "@/components/session/IdleSessionManager";
@@ -21,7 +21,7 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
       const payload = JSON.parse(atob(token.split('.')[1] || ''));
       isAdminFromToken = String(payload?.role || '').toLowerCase() === 'admin';
     }
-  } catch {}
+  } catch { }
 
   const resolvedIsAdmin = isAdmin || isAdminFromToken;
 
@@ -30,6 +30,8 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     { name: "Dispositivos", href: "/devices", icon: Server },
     { name: "Acesso Remoto", href: "/access/terminal", icon: Terminal },
     { name: "Peers BGP", href: "/bgp-peers", icon: GitBranch },
+    { name: "Looking Glass", href: "/looking-glass", icon: Globe },
+    { name: "Gerenciador IRR", href: "/irr-manager", icon: Database },
     { name: "Backup", href: "/backup", icon: HardDrive },
     { name: "Oxidized Proxies", href: "/oxidized-proxies", icon: Layers },
     { name: "Aplicações", href: "/applications", icon: Settings },
@@ -40,7 +42,7 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
   const handleLogout = () => {
     try {
       localStorage.removeItem("auth_token");
-    } catch {}
+    } catch { }
     navigate("/login");
   };
 

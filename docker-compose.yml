@@ -150,6 +150,7 @@ services:
       - "8888:8888"
     volumes:
       - oxidized_config:/home/oxidized/.config/oxidized
+      - ./docker/oxidized-custom-models:/home/oxidized/.config/oxidized/model:ro
     environment:
       - CONFIG_RELOAD_INTERVAL=600
     networks:

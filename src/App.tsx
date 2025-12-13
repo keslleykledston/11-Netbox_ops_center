@@ -17,6 +17,8 @@ import NotFound from "./pages/NotFound";
 import OxidizedProxy from "./pages/OxidizedProxy";
 import { getToken } from "@/lib/api";
 import RemoteAccess from "./modules/access/RemoteAccess";
+import LookingGlassPage from "./pages/LookingGlassPage";
+import IRRPage from "./pages/IRRPage";
 import { TenantProvider } from "@/contexts/TenantContext";
 
 const queryClient = new QueryClient();
@@ -45,6 +47,8 @@ const App = () => (
             <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
             <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
             <Route path="/access/terminal" element={<RequireAuth><RemoteAccess /></RequireAuth>} />
+            <Route path="/looking-glass" element={<RequireAuth><LookingGlassPage /></RequireAuth>} />
+            <Route path="/irr-manager" element={<RequireAuth><IRRPage /></RequireAuth>} />
             <Route path="/oxidized-proxies" element={<RequireAuth><OxidizedProxy /></RequireAuth>} />
             <Route path="/users" element={<RequireAuth><Users /></RequireAuth>} />
             <Route path="/me" element={<RequireAuth><UserProfile /></RequireAuth>} />

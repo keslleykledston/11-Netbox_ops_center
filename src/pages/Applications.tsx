@@ -9,6 +9,10 @@ import { useToast } from "@/hooks/use-toast";
 import { useApplications } from "@/hooks/use-mobile";
 import type { Application } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
+import { Activity, FileText } from "lucide-react";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -44,6 +48,10 @@ const Applications = () => {
     use_syslog: false,
     debug: false,
   });
+  const [auditResult, setAuditResult] = useState<any>(null);
+  const [auditing, setAuditing] = useState(false);
+  const [showAuditModal, setShowAuditModal] = useState(false);
+
 
   const testConnection = async (appId: string) => {
     updateApplication(appId, { status: "testing" });
@@ -152,6 +160,22 @@ const Applications = () => {
       toast({ title: "Falha na sincronização", description: String((e as any)?.message || e), variant: "destructive" });
     }
   };
+
+  const runJumpserverAudit = async (limit: number = 0) => {
+    setAuditing(true);
+    setShowAuditModal(true);
+    try {
+      const res = await api.hub.getAuditJumpserver(limit);
+      setAuditResult(res);
+      toast({ title: "Auditoria Concluída", description: `Analisados ${res.summary.netbox_devices_analyzed} dispositivos.` });
+    } catch (e) {
+      toast({ title: "Falha na auditoria", description: String((e as any)?.message || e), variant: "destructive" });
+      setShowAuditModal(false);
+    } finally {
+      setAuditing(false);
+    }
+  };
+
 
   const doJumpserverTest = async (app: Application) => {
     try {
@@ -561,10 +585,24 @@ const Applications = () => {
                         </>
                       )}
                       {isJumpserver(app) && (
-                        <Button variant="outline" size="sm" onClick={() => doJumpserverTest(app)}>
-                          <Settings className="h-4 w-4 mr-1" /> Testar Jumpserver
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => doJumpserverTest(app)}>
+                            <Settings className="h-4 w-4 mr-1" /> Testar Jumpserver
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={() => runJumpserverAudit(10)}
+                            disabled={auditing}
+                          >
+                            <Activity className={`h-4 w-4 ${auditing ? "animate-spin" : ""}`} />
+                            Auditoria (10 Dispos.)
+                          </Button>
+                        </div>
                       )}
+
+
                       {isOxidized(app) && (
                         <>
                           <Button variant="outline" size="sm" onClick={() => oxidizedConfigFor === app.id ? setOxidizedConfigFor(null) : loadOxidizedConfig(app)}>
@@ -660,6 +698,92 @@ const Applications = () => {
           ))}
         </div>
       </div>
+
+      <Dialog open={showAuditModal} onOpenChange={setShowAuditModal}>
+        <DialogContent className="max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              Relatório de Auditoria: Netbox vs JumpServer
+            </DialogTitle>
+            <DialogDescription>
+              Comparação de dispositivos entre documentação (Netbox) e acessos (JumpServer).
+              Baseado em IP e Tenant/Node.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-auto py-4">
+            {auditing ? (
+              <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                <Loader2 className="h-12 w-12 text-primary animate-spin" />
+                <p className="text-muted-foreground animate-pulse">Cruzando dados de múltiplos sistemas...</p>
+              </div>
+            ) : auditResult ? (
+              <div className="space-y-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="p-3 bg-muted/50 rounded-lg text-center">
+                    <p className="text-xs text-muted-foreground uppercase font-semibold">Analisados</p>
+                    <p className="text-2xl font-bold">{auditResult.summary.netbox_devices_analyzed}</p>
+                  </div>
+                  <div className="p-3 bg-muted/50 rounded-lg text-center">
+                    <p className="text-xs text-muted-foreground uppercase font-semibold">Total JS</p>
+                    <p className="text-2xl font-bold">{auditResult.summary.jumpserver_assets_total}</p>
+                  </div>
+                  <div className="p-3 bg-destructive/10 rounded-lg text-center">
+                    <p className="text-xs text-destructive uppercase font-semibold">Inconsistências</p>
+                    <p className="text-2xl font-bold text-destructive">{auditResult.summary.missing_count}</p>
+                  </div>
+                  <div className="p-3 bg-success/10 rounded-lg text-center">
+                    <p className="text-xs text-success uppercase font-semibold">Integridade</p>
+                    <p className="text-2xl font-bold text-success">
+                      {Math.round(((auditResult.summary.netbox_devices_analyzed - auditResult.summary.missing_count) / auditResult.summary.netbox_devices_analyzed) * 100)}%
+                    </p>
+                  </div>
+                </div>
+
+                {auditResult.missing_devices.length > 0 ? (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Dispositivo</TableHead>
+                        <TableHead>IP</TableHead>
+                        <TableHead>Tenant</TableHead>
+                        <TableHead>Motivo</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {auditResult.missing_devices.map((device: any) => (
+                        <TableRow key={device.id}>
+                          <TableCell className="font-medium">{device.name}</TableCell>
+                          <TableCell>{device.ip}</TableCell>
+                          <TableCell>{device.tenant}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground max-w-[200px]">
+                            {device.error}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="destructive">Pendente</Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-10 bg-success/5 rounded-xl border border-success/20">
+                    <CheckCircle className="h-10 w-10 text-success mb-2" />
+                    <p className="font-semibold text-success">Tudo em conformidade!</p>
+                    <p className="text-sm text-muted-foreground">Os dispositivos testados possuem documentação e acesso corretos.</p>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="pt-4 border-t flex justify-end">
+            <Button onClick={() => setShowAuditModal(false)}>Fechar Relatório</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </DashboardLayout>
   );
 };

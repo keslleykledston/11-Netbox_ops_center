@@ -354,5 +354,45 @@ export const api = {
       body: JSON.stringify({ url, apiKey, organizationId })
     });
   },
+
+  // HUB Backend (FastAPI) Integration
+  hub: {
+    base: import.meta.env.VITE_HUB_API_URL || "http://localhost:8001",
+    async fetch(path: string, opts: RequestInit = {}) {
+      const res = await fetch(`${this.base}${path}`, {
+        ...opts,
+        headers: {
+          "Content-Type": "application/json",
+          ...(opts.headers as Record<string, string> || {}),
+        },
+      });
+      if (!res.ok) throw new Error(`HUB API Error: ${res.status}`);
+      return res.json();
+    },
+    async getAuditJumpserver(limit: number = 0) {
+      return this.fetch(`/audit/jumpserver-missing${limit > 0 ? `?limit=${limit}` : ""}`);
+    },
+    async getMovideskSyncReport() {
+      return this.fetch("/sync/movidesk/report");
+    },
+    async approveMovideskSync(actionIds: string[]) {
+      return this.fetch("/sync/movidesk/approve", {
+        method: "POST",
+        body: JSON.stringify(actionIds),
+      });
+    },
+
+
+    async getBackupStatus(deviceName: string) {
+      return this.fetch(`/backup/status/${deviceName}`);
+    },
+    async registerDevice(data: any) {
+      return this.fetch("/operations/register-device", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    }
+  }
 };
+
 import { toast as sonnerToast } from "sonner";

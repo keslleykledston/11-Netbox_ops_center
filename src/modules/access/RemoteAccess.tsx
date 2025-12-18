@@ -27,6 +27,8 @@ type AuditSession = {
   durationMs?: number | null;
   user?: { id: number; email: string; username?: string | null } | null;
   canReplay: boolean;
+  jumpserverConnectionMode?: string;
+  jumpserverSessionId?: string;
 };
 
 type LiveSession = {
@@ -37,6 +39,7 @@ type LiveSession = {
     name: string;
     ipAddress?: string;
   };
+  connectionMode?: 'direct' | 'jumpserver';
 };
 
 const API_BASE = import.meta.env.VITE_API_URL || "/api";
@@ -273,7 +276,14 @@ const RemoteAccess = () => {
                     </div>
                     <div className="space-y-2">
                       <p className="text-sm font-medium text-muted-foreground">Estado</p>
-                      <Badge className={connectionBadge.variant}>{connectionBadge.text}</Badge>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <Badge className={connectionBadge.variant}>{connectionBadge.text}</Badge>
+                        {currentSession?.connectionMode && (
+                          <Badge variant="outline" className="text-xs">
+                            {currentSession.connectionMode === 'jumpserver' ? '🔒 Jumpserver' : '🔗 Direct'}
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <div className="flex gap-2">
                       <Button className="gap-2 flex-1" onClick={startSession} disabled={!selectedDeviceId || connectionState === "connecting"}>

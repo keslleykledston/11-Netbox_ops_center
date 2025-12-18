@@ -310,5 +310,49 @@ export const api = {
   async getDeviceBackupLogs(deviceId: number | string, limit = 100) {
     return apiFetch(`/devices/${deviceId}/backup-logs?limit=${limit}`, { method: 'GET' });
   },
+  // Jumpserver
+  async getJumpserverConfig(tenantId?: number | string) {
+    const params = tenantId ? `?tenantId=${tenantId}` : '';
+    return apiFetch(`/access/jumpserver/config${params}`, { method: 'GET' });
+  },
+  async listJumpserverAssets(options?: { limit?: number; search?: string; tenantId?: number | string }) {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.search) params.set('search', options.search);
+    if (options?.tenantId) params.set('tenantId', String(options.tenantId));
+    const qs = params.toString();
+    return apiFetch(`/access/jumpserver/assets${qs ? `?${qs}` : ''}`, { method: 'GET' });
+  },
+  async listJumpserverSystemUsers(options?: { limit?: number; tenantId?: number | string }) {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.tenantId) params.set('tenantId', String(options.tenantId));
+    const qs = params.toString();
+    return apiFetch(`/access/jumpserver/system-users${qs ? `?${qs}` : ''}`, { method: 'GET' });
+  },
+  async listJumpserverSessions(options?: { limit?: number; assetId?: string; tenantId?: number | string }) {
+    const params = new URLSearchParams();
+    if (options?.limit) params.set('limit', String(options.limit));
+    if (options?.assetId) params.set('assetId', options.assetId);
+    if (options?.tenantId) params.set('tenantId', String(options.tenantId));
+    const qs = params.toString();
+    return apiFetch(`/access/jumpserver/sessions${qs ? `?${qs}` : ''}`, { method: 'GET' });
+  },
+  async getJumpserverSessionReplay(sessionId: string, tenantId?: number | string) {
+    const params = tenantId ? `?tenantId=${tenantId}` : '';
+    return apiFetch(`/access/jumpserver/sessions/${sessionId}/replay${params}`, { method: 'GET' });
+  },
+  async syncJumpserverDevices(tenantId?: number | string) {
+    return apiFetch(`/access/jumpserver/sync-devices`, {
+      method: 'POST',
+      body: JSON.stringify({ tenantId })
+    });
+  },
+  async testJumpserverConnection(url: string, apiKey: string, organizationId?: string) {
+    return apiFetch(`/access/jumpserver/test`, {
+      method: 'POST',
+      body: JSON.stringify({ url, apiKey, organizationId })
+    });
+  },
 };
 import { toast as sonnerToast } from "sonner";

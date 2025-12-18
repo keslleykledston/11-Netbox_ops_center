@@ -70,7 +70,7 @@ Você deve ver:
 Abra seu navegador e acesse:
 
 ```
-http://SEU_IP:8000
+http://SEU_IP:8009
 ```
 
 **Credenciais padrão**:
@@ -352,7 +352,7 @@ Para monitoramento de peers BGP:
 
 4. **Verificar no LibreNMS**:
 
-   - Acesse http://SEU_IP:8000
+   - Acesse http://SEU_IP:8009
    - Vá em **Devices**
    - O dispositivo `router-test` deve aparecer na lista
 

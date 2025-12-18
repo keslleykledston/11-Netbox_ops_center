@@ -208,7 +208,7 @@ services:
       - NET_ADMIN
       - NET_RAW
     ports:
-      - "8000:8000"
+      - "8009:8000"
     environment:
       - TZ=America/Sao_Paulo
       - PUID=1000
@@ -221,7 +221,7 @@ services:
       - LIBRENMS_SNMP_COMMUNITY=${LIBRENMS_SNMP_COMMUNITY:-public}
       - LIBRENMS_WEATHERMAP=false
       - LIBRENMS_SMOKEPING=false
-      - BASE_URL=http://localhost:8000
+      - BASE_URL=http://localhost:8009
     volumes:
       - librenms_data:/data
     depends_on:

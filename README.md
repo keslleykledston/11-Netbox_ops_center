@@ -79,7 +79,7 @@ Se já tiver uma instância Oxidized externa:
 
 O NetBox Ops Center inclui integração completa com LibreNMS para monitoramento SNMP:
 
-1. **Acesse o LibreNMS**: `http://SEU_IP:8000`
+1. **Acesse o LibreNMS**: `http://SEU_IP:8009`
    - Usuário: `librenms`
    - Senha: `librenms` (altere imediatamente!)
 
@@ -124,7 +124,7 @@ O NetBox Ops Center inclui integração completa com LibreNMS para monitoramento
 | **App Principal** | `http://IP/` | Interface web principal |
 | **API Backend** | `http://IP/api/` | API REST |
 | **Prometheus Metrics** | `http://IP/api/metrics` | Métricas de observabilidade |
-| **LibreNMS** | `http://IP:8000` | Monitoramento de rede |
+| **LibreNMS** | `http://IP:8009` | Monitoramento de rede |
 | **Grafana** | `http://IP:3033` | Dashboards e visualização |
 | **Portainer** | `http://IP/portainer/` | Gestão de containers |
 | **Oxidized** | `http://IP/oxidized/` | Interface do Oxidized |

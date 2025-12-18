@@ -16,7 +16,7 @@ $ docker exec netbox-ops-center-backend printenv | grep LIBRENMS_TOKEN
 ### Passo 1: Acessar o LibreNMS
 
 1. Abra seu navegador
-2. Acesse: `http://SEU_IP:8000`
+2. Acesse: `http://SEU_IP:8009`
 3. Login:
    - **Usuário**: `librenms`
    - **Senha**: `librenms`
@@ -131,19 +131,19 @@ docker logs netbox-ops-center-worker -f | grep -i "4WNET"
 
 ### Passo 8: Verificar no LibreNMS
 
-1. Acesse o LibreNMS: `http://SEU_IP:8000`
+1. Acesse o LibreNMS: `http://SEU_IP:8009`
 2. Vá em **Devices**
 3. Você deve ver **4WNET-BVA-BRT-R:X_NE8000-VS1** na lista
 
 **Via API:**
 ```bash
 # Listar todos os dispositivos
-curl -s "http://localhost:8000/api/v0/devices" \
+curl -s "http://localhost:8009/api/v0/devices" \
   -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" | \
   jq '.devices[] | {hostname, display, poller_group, status}'
 
 # Buscar dispositivo específico
-curl -s "http://localhost:8000/api/v0/devices" \
+curl -s "http://localhost:8009/api/v0/devices" \
   -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" | \
   jq '.devices[] | select(.display | contains("4WNET"))'
 ```

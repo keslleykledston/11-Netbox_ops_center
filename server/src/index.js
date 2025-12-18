@@ -27,6 +27,7 @@ import {
 } from "./queues/index.js";
 import { subscribeJobEvents, unsubscribeJobEvents } from "./queues/events.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
+import { JumpserverClient, createJumpserverClientFromConfig } from "./modules/access/jumpserver-client.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
 import { getMetrics, httpMetricsMiddleware, startMetricsCollection } from "./modules/observability/metrics.js";
 import { createSafeLogger } from "./modules/observability/log-sanitizer.js";
@@ -1172,8 +1173,8 @@ async function notifyOxidizedProxies(deviceId, action = 'reload') {
     const proxiesToNotify = device.oxidizedProxyId
       ? [device.oxidizedProxy]
       : await prisma.oxidizedProxy.findMany({
-          where: { tenantId: device.tenantId, status: 'active' }
-        });
+        where: { tenantId: device.tenantId, status: 'active' }
+      });
 
     const results = [];
 
@@ -1673,6 +1674,231 @@ app.ws('/access/sessions/:id/stream', async (ws, req) => {
     });
   } catch (e) {
     ws.close(1011, e?.message || 'Erro inesperado');
+  }
+});
+
+// Jumpserver endpoints
+// Get Jumpserver configuration (only if application is registered)
+app.get('/access/jumpserver/config', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const config = await prisma.application.findFirst({
+      where: {
+        tenantId,
+        name: 'Jumpserver',
+      },
+    });
+
+    if (!config) {
+      return res.json({ configured: false });
+    }
+
+    // Parse config JSON if exists
+    let parsedConfig = {};
+    if (config.config) {
+      try {
+        parsedConfig = JSON.parse(config.config);
+      } catch { }
+    }
+
+    res.json({
+      configured: true,
+      url: config.url,
+      status: config.status,
+      organizationId: parsedConfig.organizationId || null,
+      defaultSystemUser: parsedConfig.defaultSystemUser || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Get assets from Jumpserver
+app.get('/access/jumpserver/assets', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const client = await createJumpserverClientFromConfig(prisma, tenantId);
+    if (!client) {
+      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    }
+
+    const assets = await client.getAssets({
+      limit: Number(req.query.limit) || 100,
+      search: req.query.search || '',
+    });
+
+    res.json(assets);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Get system users from Jumpserver
+app.get('/access/jumpserver/system-users', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const client = await createJumpserverClientFromConfig(prisma, tenantId);
+    if (!client) {
+      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    }
+
+    const systemUsers = await client.getSystemUsers({
+      limit: Number(req.query.limit) || 100,
+    });
+
+    res.json(systemUsers);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// List sessions from Jumpserver
+app.get('/access/jumpserver/sessions', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const client = await createJumpserverClientFromConfig(prisma, tenantId);
+    if (!client) {
+      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    }
+
+    const sessions = await client.listSessions({
+      limit: Number(req.query.limit) || 50,
+      assetId: req.query.assetId || undefined,
+    });
+
+    res.json(sessions);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Get session replay from Jumpserver
+app.get('/access/jumpserver/sessions/:sessionId/replay', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const client = await createJumpserverClientFromConfig(prisma, tenantId);
+    if (!client) {
+      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    }
+
+    const sessionId = req.params.sessionId;
+    const replay = await client.getSessionReplay(sessionId);
+
+    res.json(replay);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Sync devices with Jumpserver assets (batch update jumpserverAssetId)
+app.post('/access/jumpserver/sync-devices', requireAuth, async (req, res) => {
+  try {
+    const tenantId = req.user.role === 'admin' && req.body.tenantId
+      ? Number(req.body.tenantId)
+      : (req.user.tenantId || null);
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+    }
+
+    const client = await createJumpserverClientFromConfig(prisma, tenantId);
+    if (!client) {
+      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    }
+
+    // Get all assets from Jumpserver
+    const assets = await client.getAssets({ limit: 1000 });
+
+    // Get all devices from this tenant
+    const devices = await prisma.device.findMany({ where: { tenantId } });
+
+    // Match by IP address
+    let matchedCount = 0;
+    for (const device of devices) {
+      const asset = assets.find(a => a.ip === device.ipAddress || a.address === device.ipAddress);
+      if (asset) {
+        await prisma.device.update({
+          where: { id: device.id },
+          data: { jumpserverAssetId: asset.id },
+        });
+        matchedCount++;
+      }
+    }
+
+    res.json({
+      ok: true,
+      matched: matchedCount,
+      totalDevices: devices.length,
+      totalAssets: assets.length,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Test Jumpserver connection
+app.post('/access/jumpserver/test', requireAuth, async (req, res) => {
+  try {
+    const { url, apiKey, organizationId } = req.body || {};
+
+    if (!url || !apiKey) {
+      return res.status(400).json({ error: 'URL e API Key obrigatórios' });
+    }
+
+    const client = new JumpserverClient({
+      baseUrl: url,
+      apiToken: apiKey,
+      organizationId: organizationId || null,
+    });
+
+    const result = await client.authenticate();
+
+    res.json({
+      ok: true,
+      connected: true,
+      user: result.user,
+    });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      connected: false,
+      error: String(e?.message || e),
+    });
   }
 });
 

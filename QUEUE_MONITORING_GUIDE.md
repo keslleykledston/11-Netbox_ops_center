@@ -287,7 +287,7 @@ docker exec netbox-ops-center-librenms snmpwalk -v2c -c 4wnetsnmp 10.x.x.x syste
 
 ```bash
 # Verificar se o dispositivo existe no LibreNMS
-curl -s http://localhost:8000/api/v0/devices \
+curl -s http://localhost:8009/api/v0/devices \
   -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" | \
   jq '.devices[] | select(.hostname | contains("4WNET"))'
 ```
@@ -427,11 +427,11 @@ curl -s "http://localhost/api/devices/$DEVICE_ID" -H "Authorization: Bearer $TOK
 # 1. Verificar se o device_id realmente existe no LibreNMS
 LIBRENMS_ID=$(curl -s "http://localhost/api/devices/$DEVICE_ID" -H "Authorization: Bearer $TOKEN" | jq -r '.libreNmsId')
 
-curl -s "http://localhost:8000/api/v0/devices/$LIBRENMS_ID" \
+curl -s "http://localhost:8009/api/v0/devices/$LIBRENMS_ID" \
   -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" | jq
 
 # 2. Verificar se o dispositivo está marcado como "disabled"
-curl -s "http://localhost:8000/api/v0/devices" \
+curl -s "http://localhost:8009/api/v0/devices" \
   -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" | \
   jq ".devices[] | select(.device_id == $LIBRENMS_ID) | {device_id, hostname, disabled, status}"
 ```
@@ -439,7 +439,7 @@ curl -s "http://localhost:8000/api/v0/devices" \
 **Solução:**
 - Se `disabled: 1`, habilite no LibreNMS:
   ```bash
-  curl -X PATCH "http://localhost:8000/api/v0/devices/$LIBRENMS_ID" \
+  curl -X PATCH "http://localhost:8009/api/v0/devices/$LIBRENMS_ID" \
     -H "X-Auth-Token: SEU_TOKEN_LIBRENMS" \
     -H "Content-Type: application/json" \
     -d '{"field": "disabled", "value": "0"}'

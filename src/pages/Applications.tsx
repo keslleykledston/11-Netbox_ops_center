@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Plus, Settings, Save, X, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Plus, Settings, Save, X, CheckCircle, AlertCircle, Loader2, Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useApplications } from "@/hooks/use-mobile";
@@ -35,6 +35,7 @@ const Applications = () => {
   const [selectedDeviceTypes, setSelectedDeviceTypes] = useState<string[]>([]);
   const [selectedSites, setSelectedSites] = useState<string[]>([]);
   const [oxidizedConfigFor, setOxidizedConfigFor] = useState<string | null>(null);
+  const [revealApiKey, setRevealApiKey] = useState<Record<string, boolean>>({});
   const [oxidizedConfig, setOxidizedConfig] = useState({
     interval: 3600,
     timeout: 30,
@@ -313,13 +314,35 @@ const Applications = () => {
                 </div>
                 <div className="space-y-2">
                   <Label>API Key</Label>
-                  <Input
-                    type="password"
-                    value={editingId === app.id ? editForm.apiKey : app.apiKey}
-                    readOnly={editingId !== app.id}
-                    onChange={(e) => setEditForm(prev => ({ ...prev, apiKey: e.target.value }))}
-                    placeholder="Sua chave de API"
-                  />
+                  <div className="relative">
+                    <Input
+                      type={revealApiKey[app.id] ? "text" : "password"}
+                      value={editingId === app.id ? editForm.apiKey : app.apiKey}
+                      readOnly={editingId !== app.id}
+                      onChange={(e) => setEditForm(prev => ({ ...prev, apiKey: e.target.value }))}
+                      placeholder="Sua chave de API"
+                      className="pr-10"
+                    />
+                    {editingId !== app.id && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="absolute right-0 top-0 h-full px-3 hover:bg-transparent"
+                        onMouseDown={() => setRevealApiKey(prev => ({ ...prev, [app.id]: true }))}
+                        onMouseUp={() => setRevealApiKey(prev => ({ ...prev, [app.id]: false }))}
+                        onMouseLeave={() => setRevealApiKey(prev => ({ ...prev, [app.id]: false }))}
+                        onTouchStart={() => setRevealApiKey(prev => ({ ...prev, [app.id]: true }))}
+                        onTouchEnd={() => setRevealApiKey(prev => ({ ...prev, [app.id]: false }))}
+                      >
+                        {revealApiKey[app.id] ? (
+                          <Eye className="h-4 w-4 text-muted-foreground" />
+                        ) : (
+                          <EyeOff className="h-4 w-4 text-muted-foreground" />
+                        )}
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 {isNetbox(app) && editingId === app.id && (
                   <>

@@ -67,6 +67,9 @@ model Device {
 
   isProduction  Boolean  @default(false)
   jumpserverId  String?
+  jumpserverAssetId String?  // Asset ID in Jumpserver
+  useJumpserver Boolean  @default(false)  // Use Jumpserver as SSH proxy
+  jumpserverSystemUser String?  // System User in Jumpserver for this device
   customData    String?  // JSON string for extra metadata
 
   backupEnabled Boolean  @default(false)
@@ -173,6 +176,8 @@ model SshSession {
   durationMs Int?
   logPath    String?
   reason     String?
+  jumpserverConnectionMode String?  // "direct" or "jumpserver"
+  jumpserverSessionId String?  // Session ID in Jumpserver
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 

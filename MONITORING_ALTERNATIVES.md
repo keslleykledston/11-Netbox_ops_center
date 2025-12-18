@@ -349,7 +349,7 @@ async function getLibrenmsBgpPeers(deviceId) {
 ### **1. Primeiro acesso ao LibreNMS**
 
 ```bash
-# Acessar: http://IP:8000
+# Acessar: http://IP:8009
 # Usuário: admin
 # Senha: (gerada na primeira instalação, ver logs)
 docker logs netbox-ops-center-librenms | grep "Admin password"

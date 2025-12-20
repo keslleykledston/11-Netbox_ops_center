@@ -14,7 +14,6 @@ import Maintenance from "./pages/Maintenance";
 import Users from "./pages/Users";
 import UserProfile from "./pages/UserProfile";
 import NotFound from "./pages/NotFound";
-import OperationalHub from "./pages/OperationalHub";
 import OxidizedProxy from "./pages/OxidizedProxy";
 import { getToken } from "@/lib/api";
 import RemoteAccess from "./modules/access/RemoteAccess";
@@ -42,7 +41,6 @@ const App = () => (
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
             <Route path="/dashboard" element={<RequireAuth><Dashboard /></RequireAuth>} />
-            <Route path="/hub" element={<RequireAuth><OperationalHub /></RequireAuth>} />
             <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
             <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
             <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />

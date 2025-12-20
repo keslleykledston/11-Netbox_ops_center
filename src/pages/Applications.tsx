@@ -12,7 +12,8 @@ import { api } from "@/lib/api";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Activity, FileText } from "lucide-react";
+import { Activity } from "lucide-react";
+import OperationalHubPanel from "@/components/hub/OperationalHubPanel";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -51,6 +52,7 @@ const Applications = () => {
   const [auditResult, setAuditResult] = useState<any>(null);
   const [auditing, setAuditing] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
+  const [showHubModal, setShowHubModal] = useState(false);
 
 
   const testConnection = async (appId: string) => {
@@ -242,10 +244,16 @@ const Applications = () => {
             </p>
           </div>
           {!adding ? (
-            <Button className="gap-2" onClick={() => setAdding(true)}>
-              <Plus className="h-4 w-4" />
-              Adicionar Aplicação
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" className="gap-2" onClick={() => setShowHubModal(true)}>
+                <Activity className="h-4 w-4" />
+                Sincronizar
+              </Button>
+              <Button className="gap-2" onClick={() => setAdding(true)}>
+                <Plus className="h-4 w-4" />
+                Adicionar Aplicação
+              </Button>
+            </div>
           ) : (
             <Card className="w-full max-w-3xl">
               <CardHeader>
@@ -781,6 +789,26 @@ const Applications = () => {
 
           <div className="pt-4 border-t flex justify-end">
             <Button onClick={() => setShowAuditModal(false)}>Fechar Relatório</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showHubModal} onOpenChange={setShowHubModal}>
+        <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden flex flex-col p-0">
+          <DialogHeader className="px-6 pt-6">
+            <DialogTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              HUB Operacional
+            </DialogTitle>
+            <DialogDescription>
+              Sincronização Movidesk, auditoria NetBox e consistência com JumpServer.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto px-6 pb-6">
+            {showHubModal && <OperationalHubPanel showHeader={false} />}
+          </div>
+          <div className="px-6 pb-6 pt-2 border-t flex justify-end">
+            <Button onClick={() => setShowHubModal(false)}>Fechar</Button>
           </div>
         </DialogContent>
       </Dialog>

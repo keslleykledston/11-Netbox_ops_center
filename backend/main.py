@@ -15,7 +15,10 @@ from backend.services.sync_service import sync_svc
 
 
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(levelname)s:%(name)s:%(message)s'
+)
 
 # Cache initialization
 cache = TTLCache(maxsize=1000, ttl=settings.CACHE_TTL)
@@ -34,7 +37,10 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     logger.info("Starting Netbox Ops Center HUB...")
-    await netbox_svc.ensure_custom_fields()
+    try:
+        await netbox_svc.ensure_custom_fields()
+    except Exception:
+        logger.exception("Falha ao inicializar integração com NetBox. HUB continuará carregando.")
 
 
 # Models
@@ -195,6 +201,51 @@ async def approve_movidesk_sync(action_ids: List[str]):
     return {
         "results": results
     }
+
+@app.get("/debug/jumpserver/nodes")
+async def debug_jumpserver_nodes():
+    """Lista todos os nodes do JumpServer para debug."""
+    try:
+        nodes = await jumpserver_svc.get_nodes()
+        return {
+            "total": len(nodes),
+            "nodes": [
+                {
+                    "id": n.get("id"),
+                    "value": n.get("value"),
+                    "full_value": n.get("full_value"),
+                    "key": n.get("key")
+                }
+                for n in nodes
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/debug/jumpserver/test-path")
+async def debug_test_node_path(path: str):
+    """Testa a criação de um path específico no JumpServer."""
+    try:
+        logger.info(f"Testing node path creation: {path}")
+        result_id = await jumpserver_svc.ensure_node_path(path)
+
+        # Verify it was created
+        nodes = await jumpserver_svc.get_nodes()
+        created_node = None
+        for n in nodes:
+            if n.get("id") == result_id:
+                created_node = n
+                break
+
+        return {
+            "requested_path": path,
+            "result_id": result_id,
+            "created_node": created_node,
+            "success": result_id is not None
+        }
+    except Exception as e:
+        logger.exception(f"Error testing path: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Status de Backup: Agregador Oxidized
 @app.get("/backup/status/{device_name}")

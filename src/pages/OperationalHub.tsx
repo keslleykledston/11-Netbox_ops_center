@@ -18,8 +18,9 @@ const OperationalHub = () => {
     const [loadingAudit, setLoadingAudit] = useState(false);
     const [syncReport, setSyncReport] = useState<any>(null);
     const [loadingSync, setLoadingSync] = useState(false);
-    const [selectedSync, setSelectedSync] = useState<string[]>([]);
     const [executingSync, setExecutingSync] = useState(false);
+    const [showAllSync, setShowAllSync] = useState(false);
+    const [selectedSync, setSelectedSync] = useState<string[]>([]);
 
 
     const fetchAudit = async () => {
@@ -205,12 +206,22 @@ const OperationalHub = () => {
                         <Card>
                             <CardHeader className="flex flex-row items-center justify-between">
                                 <div>
-                                    <CardTitle>Pendências Movidesk</CardTitle>
+                                    <CardTitle>Sincronização Movidesk</CardTitle>
                                     <CardDescription>
-                                        Clientes/Empresas do Movidesk pendentes de sincronização ou atualização.
+                                        Auditoria entre Movidesk, NetBox e JumpServer (/DEFAULT/PRODUÇÃO).
                                     </CardDescription>
                                 </div>
-                                <div className="flex gap-2">
+                                <div className="flex items-center gap-4">
+                                    <div className="flex items-center gap-2 px-3 py-1.5 border rounded-md bg-muted/20">
+                                        <Checkbox
+                                            id="show-all"
+                                            checked={showAllSync}
+                                            onCheckedChange={(checked) => setShowAllSync(!!checked)}
+                                        />
+                                        <label htmlFor="show-all" className="text-xs font-medium cursor-pointer">
+                                            Exibir Tudo (incluir OK)
+                                        </label>
+                                    </div>
                                     <Button
                                         variant="outline"
                                         size="sm"
@@ -274,38 +285,40 @@ const OperationalHub = () => {
                                                 </TableRow>
                                             </TableHeader>
                                             <TableBody>
-                                                {syncReport.actions.map((action: any) => (
-                                                    <TableRow key={action.id} className={action.status === 'synced' ? 'opacity-60 bg-muted/30' : ''}>
-                                                        <TableCell>
-                                                            {action.status !== 'synced' && (
-                                                                <Checkbox
-                                                                    checked={selectedSync.includes(action.id)}
-                                                                    onCheckedChange={() => toggleSelection(action.id)}
-                                                                />
-                                                            )}
-                                                            {action.status === 'synced' && (
-                                                                <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
-                                                            )}
-                                                        </TableCell>
-                                                        <TableCell className="font-medium text-xs lg:text-sm">
-                                                            {action.client_name}
-                                                            <p className="text-[10px] text-muted-foreground">ID: {action.movidesk_id}</p>
-                                                        </TableCell>
-                                                        <TableCell className="text-xs lg:text-sm">{action.cnpj}</TableCell>
-                                                        <TableCell>
-                                                            {action.status === 'synced' ? (
-                                                                <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-200 text-[10px]">OK</Badge>
-                                                            ) : action.status === 'pending_create' ? (
-                                                                <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200 text-[10px]">Novo</Badge>
-                                                            ) : (
-                                                                <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200 text-[10px]">Update</Badge>
-                                                            )}
-                                                        </TableCell>
-                                                        <TableCell className="text-xs text-muted-foreground italic">
-                                                            {action.details}
-                                                        </TableCell>
-                                                    </TableRow>
-                                                ))}
+                                                {syncReport.actions
+                                                    .filter((a: any) => showAllSync || a.status !== 'synced')
+                                                    .map((action: any) => (
+                                                        <TableRow key={action.id} className={action.status === 'synced' ? 'opacity-60 bg-muted/30' : ''}>
+                                                            <TableCell>
+                                                                {action.status !== 'synced' && (
+                                                                    <Checkbox
+                                                                        checked={selectedSync.includes(action.id)}
+                                                                        onCheckedChange={() => toggleSelection(action.id)}
+                                                                    />
+                                                                )}
+                                                                {action.status === 'synced' && (
+                                                                    <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
+                                                                )}
+                                                            </TableCell>
+                                                            <TableCell className="font-medium text-xs lg:text-sm">
+                                                                {action.client_name}
+                                                                <p className="text-[10px] text-muted-foreground">ID: {action.movidesk_id}</p>
+                                                            </TableCell>
+                                                            <TableCell className="text-xs lg:text-sm">{action.cnpj}</TableCell>
+                                                            <TableCell>
+                                                                {action.status === 'synced' ? (
+                                                                    <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-200 text-[10px]">OK</Badge>
+                                                                ) : action.status === 'pending_create' ? (
+                                                                    <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-200 text-[10px]">Novo</Badge>
+                                                                ) : (
+                                                                    <Badge variant="outline" className="bg-amber-500/10 text-amber-600 border-amber-200 text-[10px]">Update</Badge>
+                                                                )}
+                                                            </TableCell>
+                                                            <TableCell className="text-xs text-muted-foreground italic">
+                                                                {action.details}
+                                                            </TableCell>
+                                                        </TableRow>
+                                                    ))}
                                             </TableBody>
                                         </Table>
                                     </div>

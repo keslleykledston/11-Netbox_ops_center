@@ -9,28 +9,41 @@ from backend.core.config import settings
 
 class NetBoxService:
     def __init__(self):
-        self.nb = pynetbox.api(settings.NETBOX_URL, token=settings.NETBOX_TOKEN)
+        self.nb = None
+        if settings.NETBOX_URL and settings.NETBOX_TOKEN:
+            self.nb = pynetbox.api(settings.NETBOX_URL, token=settings.NETBOX_TOKEN)
+        else:
+            logger.warning("NETBOX_URL/NETBOX_TOKEN não configurados. Integração NetBox desabilitada.")
         self.executor = ThreadPoolExecutor(max_workers=10)
+
+    def _require_client(self):
+        if not self.nb:
+            raise RuntimeError("NetBox não configurado (defina NETBOX_URL e NETBOX_TOKEN).")
 
     async def _run_async(self, func, *args, **kwargs):
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(self.executor, lambda: func(*args, **kwargs))
     async def get_devices(self):
+        self._require_client()
         return await self._run_async(self.nb.dcim.devices.all)
 
     async def get_device_by_name(self, name: str):
+        self._require_client()
         return await self._run_async(self.nb.dcim.devices.get, name=name)
 
     async def get_tenant_by_id(self, tenant_id: int):
+        self._require_client()
         return await self._run_async(self.nb.tenancy.tenants.get, tenant_id)
 
 
     async def get_tenants(self, **kwargs):
+        self._require_client()
         if kwargs:
             return await self._run_async(self.nb.tenancy.tenants.filter, **kwargs)
         return await self._run_async(self.nb.tenancy.tenants.all)
 
     async def get_tenant_by_custom_field(self, field_name: str, value: str):
+        self._require_client()
         if not value:
             return None
         # Try both variants (the one passed and common fallbacks)
@@ -40,9 +53,11 @@ class NetBoxService:
             return None
 
     async def get_tenant_group_by_name(self, name: str):
+        self._require_client()
         return await self._run_async(self.nb.tenancy.tenant_groups.get, name=name)
 
     async def create_tenant(self, name: str, slug: str, description: str = "", custom_fields: dict = None, group_id: int = None):
+        self._require_client()
         payload = {
             "name": name,
             "slug": slug,
@@ -56,6 +71,7 @@ class NetBoxService:
         return await self._run_async(self.nb.tenancy.tenants.create, payload)
 
     async def update_tenant(self, tenant_id: int, data: dict):
+        self._require_client()
         tenant = await self._run_async(self.nb.tenancy.tenants.get, tenant_id)
         if tenant:
             tenant.update(data)
@@ -63,6 +79,9 @@ class NetBoxService:
         return None
 
     async def ensure_custom_fields(self):
+        if not self.nb:
+            logger.warning("NetBox não configurado. Pulando ensure_custom_fields().")
+            return
         """Ensure required custom fields exist for Tenants."""
         required = [
             {"name": "ERP_ID", "label": "ERP_ID", "type": "text"},
@@ -122,4 +141,3 @@ class NetBoxService:
 
 
 netbox_svc = NetBoxService()
-

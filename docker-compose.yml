@@ -14,6 +14,7 @@ services:
       - redis
       - librenms
       - grafana
+      - hub-backend
     networks:
       - netbox-net
     restart: unless-stopped
@@ -24,6 +25,7 @@ services:
     working_dir: /app
     environment:
       - API_SERVER_URL=http://backend:4000
+      - VITE_HUB_API_URL=/hub-api
     volumes:
       - .:/app
     command: >-
@@ -70,6 +72,31 @@ services:
       - db
       - redis
       - oxidized
+    networks:
+      - netbox-net
+    restart: unless-stopped
+
+  hub-backend:
+    image: python:3.10-slim-bullseye
+    container_name: netbox-ops-center-hub-backend
+    working_dir: /app
+    env_file:
+      - .env
+      - server/.env
+    environment:
+      OXIDIZED_API_URL: http://oxidized:8888
+    volumes:
+      - ./backend:/app/backend
+    command: >-
+      sh -lc "
+        pip install --no-cache-dir -r backend/requirements.txt && \
+        PYTHONPATH=/app uvicorn backend.main:app --host 0.0.0.0 --port 8001
+      "
+    expose:
+      - "8001"
+    depends_on:
+      - db
+      - redis
     networks:
       - netbox-net
     restart: unless-stopped

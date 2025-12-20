@@ -357,7 +357,7 @@ export const api = {
 
   // HUB Backend (FastAPI) Integration
   hub: {
-    base: import.meta.env.VITE_HUB_API_URL || "http://localhost:8001",
+    base: import.meta.env.VITE_HUB_API_URL || "/hub-api",
     async fetch(path: string, opts: RequestInit = {}) {
       const res = await fetch(`${this.base}${path}`, {
         ...opts,

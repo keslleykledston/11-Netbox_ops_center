@@ -11,13 +11,18 @@ class JumpServerService:
         self._cached_token: Optional[str] = settings.JUMPSERVER_TOKEN
         self._token_type = "Bearer" # N8N flow uses Bearer for JWT
 
+    def _normalize_path(self, path: str) -> str:
+        """Normalize JumpServer paths to avoid false negatives (extra slashes/spaces)."""
+        clean_parts = [p.strip() for p in path.split("/") if p and p.strip()]
+        return "/" + "/".join(clean_parts)
+
     async def login(self) -> Optional[str]:
         """Perform login to get a fresh JWT token."""
         if not self.base_url or not settings.JUMPSERVER_USERNAME or not settings.JUMPSERVER_PASSWORD:
             logger.warning("JumpServer base_url or credentials not configured")
             return None
             
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             endpoint = f"{self.base_url}/api/v1/authentication/auth/"
             payload = {
                 "username": settings.JUMPSERVER_USERNAME,
@@ -53,7 +58,7 @@ class JumpServerService:
             return []
         
         headers = await self.get_headers()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             endpoint = f"{self.base_url}/api/v1/assets/assets/"
             try:
                 response = await client.get(endpoint, headers=headers, timeout=10.0)
@@ -76,60 +81,264 @@ class JumpServerService:
         if not self.base_url:
             return []
         headers = await self.get_headers()
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             endpoint = f"{self.base_url}/api/v1/assets/nodes/"
+            url = endpoint
+            params = {"limit": 100, "offset": 0}
+            nodes: List[Dict[str, Any]] = []
+            base_scheme = "https" if self.base_url.startswith("https://") else "http"
+
+            def normalize_next(next_url: Optional[str]) -> Optional[str]:
+                if not next_url:
+                    return None
+                if next_url.startswith("/"):
+                    return f"{self.base_url}{next_url}"
+                if next_url.startswith("http://") and base_scheme == "https":
+                    return next_url.replace("http://", "https://", 1)
+                return next_url
+
             try:
-                response = await client.get(endpoint, headers=headers, timeout=10.0)
-                response.raise_for_status()
-                return response.json()
+                while url:
+                    response = await client.get(url, headers=headers, params=params, timeout=10.0)
+                    if response.status_code == 401:
+                        await self.login()
+                        headers = await self.get_headers()
+                        response = await client.get(url, headers=headers, params=params, timeout=10.0)
+
+                    response.raise_for_status()
+                    data = response.json()
+
+                    # JumpServer may return a paginated dict or a flat list
+                    if isinstance(data, list):
+                        nodes.extend(data)
+                        break
+
+                    page_results = data.get("results") or data.get("data") or []
+                    nodes.extend(page_results)
+
+                    next_url = normalize_next(data.get("next"))
+                    if not next_url:
+                        break
+
+                    url = next_url
+                    logger.debug(f"Following pagination to: {url}")
+                    params = None  # the 'next' URL already contains paging info
+
+                logger.info(f"Loaded {len(nodes)} nodes from JumpServer")
+                return nodes
             except Exception as e:
                 logger.error(f"Failed to fetch nodes: {e}")
+                if hasattr(e, 'response'):
+                    logger.error(f"Response body: {e.response.text if hasattr(e.response, 'text') else 'N/A'}")
                 return []
 
-    async def create_node(self, name: str, parent_id: str) -> Dict[str, Any]:
+    async def update_node(
+        self,
+        node_id: str,
+        parent_id: str,
+        parent_key: Optional[str] = None,
+        parent_org: Optional[str] = None,
+        key_override: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Move a node to a different parent."""
         if not self.base_url:
             return None
         headers = await self.get_headers()
-        async with httpx.AsyncClient() as client:
-            endpoint = f"{self.base_url}/api/v1/assets/nodes/"
-            payload = {"value": name, "parent": parent_id}
+        # Use org header when provided to avoid defaulting to root org
+        if parent_org:
+            headers = {**headers, "X-JMS-ORG": parent_org}
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            endpoint = f"{self.base_url}/api/v1/assets/nodes/{node_id}/"
+            payload: Dict[str, Any] = {}
+            if parent_id:
+                payload["parent"] = parent_id  # Use ID for parent
+                payload["parent_id"] = parent_id
+            if parent_org:
+                payload["org_id"] = parent_org
+            if key_override:
+                payload["key"] = key_override
+            # Include parent_key if needed, but 'parent' as ID is safer usually
+            if parent_key:
+                payload["parent_key"] = parent_key
+
+            logger.info(f"Moving node {node_id} to parent_id={parent_id} parent_key={parent_key} org={parent_org} payload={payload}")
             try:
-                response = await client.post(endpoint, headers=headers, json=payload, timeout=10.0)
+                response = await client.patch(endpoint, headers=headers, json=payload, timeout=10.0)
                 response.raise_for_status()
-                return response.json()
+                logger.info(f"[JS MOVE] status={response.status_code} parent={parent_id} body={response.text}")
+                result = response.json()
+                logger.info(f"Node moved successfully to: {result.get('full_value', 'N/A')}")
+                return result
             except Exception as e:
-                logger.error(f"Failed to create node {name}: {e}")
+                logger.error(f"Failed to move node {node_id}: {e}")
+                if hasattr(e, 'response'):
+                    logger.error(f"[JS MOVE ERROR] status={e.response.status_code} body={e.response.text if hasattr(e.response, 'text') else 'N/A'}")
+                return None
+
+    async def delete_node(self, node_id: str) -> bool:
+        """Delete a node by ID. Best-effort, used to clean wrong placements."""
+        if not self.base_url:
+            return False
+        headers = await self.get_headers()
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            endpoint = f"{self.base_url}/api/v1/assets/nodes/{node_id}/"
+            try:
+                response = await client.delete(endpoint, headers=headers, timeout=10.0)
+                if response.status_code in (200, 204, 404):
+                    logger.info(f"Deleted node {node_id} (status={response.status_code})")
+                    return True
+                logger.error(f"Failed to delete node {node_id}, status={response.status_code}, body={response.text}")
+                return False
+            except Exception as e:
+                logger.error(f"Error deleting node {node_id}: {e}")
+                return False
+
+    async def create_node(
+        self,
+        name: str,
+        parent_id: str,
+        parent_key: Optional[str] = None,
+        parent_org: Optional[str] = None,
+        key_override: Optional[str] = None,
+        expected_path: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.base_url:
+            return None
+        if not parent_id:
+            logger.error("Cannot create child node without parent_id.")
+            return None
+        headers = await self.get_headers()
+        if parent_org:
+            headers = {**headers, "X-JMS-ORG": parent_org}
+
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            # Correct UI flow: create child under parent, then rename with PATCH
+            create_endpoint = f"{self.base_url}/api/v1/assets/nodes/{parent_id}/children/"
+            try:
+                logger.info(f"Creating child node under parent_id={parent_id} via {create_endpoint}")
+                resp = await client.post(create_endpoint, headers=headers, json={}, timeout=10.0)
+                logger.info(f"[JS CREATE CHILD] status={resp.status_code} body={resp.text}")
+                resp.raise_for_status()
+                created = resp.json()
+                child_id = created.get("id")
+                if not child_id:
+                    logger.error("Create child response missing id.")
+                    return None
+
+                # Rename to requested value
+                rename_endpoint = f"{self.base_url}/api/v1/assets/nodes/{child_id}/"
+                rename_payload = {"value": name}
+                logger.info(f"Renaming child node {child_id} to '{name}'")
+                rename_resp = await client.patch(rename_endpoint, headers=headers, json=rename_payload, timeout=10.0)
+                logger.info(f"[JS RENAME] status={rename_resp.status_code} body={rename_resp.text}")
+                rename_resp.raise_for_status()
+                renamed = rename_resp.json()
+
+                if expected_path and renamed.get("full_value") != expected_path:
+                    logger.warning(f"Rename placed node at '{renamed.get('full_value')}', expected '{expected_path}'.")
+                return renamed
+            except Exception as e:
+                logger.error(f"Failed to create child node '{name}' under parent {parent_id}: {e}")
+                if hasattr(e, 'response'):
+                    logger.error(f"[JS CREATE CHILD ERROR] status={e.response.status_code} body={e.response.text if hasattr(e.response, 'text') else 'N/A'}")
                 return None
 
     async def ensure_node_path(self, path: str) -> Optional[str]:
         """
-        Idempotently ensure a node path exists. Returns the ID of the leaf node.
-        Example path: /DEFAULT/PRODUCAO/TenantName
+        Ensure a node path exists using the UI-correct children endpoint.
+        Returns the ID of the leaf node if it exists or is created.
         """
         if not self.base_url:
             return None
-        
+
+        def build_maps(node_list: List[Dict[str, Any]]):
+            by_full_lower = {}
+            by_id_local = {}
+            for node in node_list:
+                full_val = node.get("full_value") or ""
+                norm_lower = self._normalize_path(full_val).lower()
+                if norm_lower not in by_full_lower:
+                    by_full_lower[norm_lower] = node
+                node_id = node.get("id")
+                if node_id:
+                    by_id_local[node_id] = node
+            return by_full_lower, by_id_local
+
+        normalized_requested_path = self._normalize_path(path)
+        parts = [p for p in normalized_requested_path.split("/") if p]
+
+        logger.info(f"Ensuring node path (case-insensitive): {normalized_requested_path}")
+
         nodes = await self.get_nodes()
-        parts = [p for p in path.split("/") if p]
-        
-        current_parent_id = "" # Root
-        
+        if not nodes:
+            logger.error("JumpServer returned no nodes; aborting.")
+            return None
+
+        by_full_lower, by_id = build_maps(nodes)
+        current_parent_id: Optional[str] = None
+        current_actual_path = ""
+
         for part in parts:
-            # Find if part exists under current_parent_id
-            found = next((n for n in nodes if n["value"] == part and (n.get("parent") or "") == current_parent_id), None)
-            
-            if found:
-                current_parent_id = found["id"]
-            else:
-                # Create it
-                new_node = await self.create_node(part, current_parent_id or None)
-                if not new_node:
-                    return None
-                current_parent_id = new_node["id"]
-                # Refresh nodes for next part
-                nodes = await self.get_nodes()
-                
+            expected_path = self._normalize_path(f"{current_actual_path}/{part}")
+            node = by_full_lower.get(expected_path.lower())
+            if node:
+                current_parent_id = node.get("id")
+                current_actual_path = self._normalize_path(node.get("full_value") or expected_path)
+                logger.debug(f"✓ Found existing node '{current_actual_path}'")
+                continue
+
+            parent_node = by_id.get(current_parent_id) if current_parent_id else None
+            parent_org = parent_node.get("org_id") if parent_node else None
+            if not current_parent_id:
+                logger.error(f"Cannot create '{part}' without parent_id (path='{expected_path}').")
+                return None
+
+            new_node = await self.create_node(
+                part,
+                current_parent_id,
+                parent_org=parent_org,
+                expected_path=expected_path,
+            )
+            if not new_node:
+                logger.error(f"Failed to create node segment '{part}'. Aborting path ensure.")
+                return None
+
+            current_parent_id = new_node.get("id")
+            current_actual_path = self._normalize_path(new_node.get("full_value") or expected_path)
+            logger.info(f"✓ Created node '{current_actual_path}' (ID: {current_parent_id})")
+
+            nodes = await self.get_nodes()
+            by_full_lower, by_id = build_maps(nodes)
+
+        logger.info(f"=== Path ensure complete. Leaf ID: {current_parent_id} ===")
         return current_parent_id
+
+    async def check_node_exists(self, path: str) -> bool:
+        """Checks if a full node path exists without creating it."""
+        if not self.base_url:
+            return False
+
+        normalized_path = self._normalize_path(path)
+        nodes = await self.get_nodes()
+
+        if not isinstance(nodes, list) or not nodes:
+            logger.error(f"JumpServer node list unavailable; cannot verify '{normalized_path}'.")
+            return False
+
+        matches_exact = [n for n in nodes if self._normalize_path(n.get("full_value") or "") == normalized_path]
+        if matches_exact:
+            return True
+
+        # Fallback: case-insensitive comparison to avoid false negatives on casing
+        normalized_lower = normalized_path.lower()
+        for n in nodes:
+            full_val = n.get("full_value") or ""
+            if self._normalize_path(full_val).lower() == normalized_lower:
+                logger.warning(f"Node exists with different casing: stored '{full_val}', requested '{normalized_path}'")
+                return True
+
+        logger.warning(f"Node '{normalized_path}' not found among {len(nodes)} nodes.")
+        return False
 
 
 jumpserver_svc = JumpServerService()

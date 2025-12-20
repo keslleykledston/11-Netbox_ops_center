@@ -98,6 +98,26 @@ export class JumpserverClient {
     }
 
     /**
+     * Create a new asset
+     */
+    async createAsset(data) {
+        return await this.request('/api/v1/assets/assets/', {
+            method: 'POST',
+            body: JSON.stringify(data),
+        });
+    }
+
+    /**
+     * Update an existing asset
+     */
+    async updateAsset(assetId, data) {
+        return await this.request(`/api/v1/assets/assets/${assetId}/`, {
+            method: 'PATCH',
+            body: JSON.stringify(data),
+        });
+    }
+
+    /**
      * Get all system users
      */
     async getSystemUsers({ limit = 100, offset = 0 } = {}) {

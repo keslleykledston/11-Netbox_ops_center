@@ -35,6 +35,7 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     { name: "Backup", href: "/backup", icon: HardDrive },
     { name: "Oxidized Proxies", href: "/oxidized-proxies", icon: Layers },
     { name: "Aplicações", href: "/applications", icon: Settings },
+    { name: "Sync JumpServer", href: "/jumpserver-sync", icon: FileJson },
     { name: "Manutenção", href: "/maintenance", icon: Wrench },
     ...(resolvedIsAdmin ? [{ name: "Usuários", href: "/users", icon: UsersIcon }] : [{ name: "Usuário", href: "/me", icon: UsersIcon }]),
   ];

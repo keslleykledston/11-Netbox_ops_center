@@ -332,3 +332,51 @@ model MovideskSyncAction {
 
   @@index([movideskCompanyId])
 }
+
+model SyncJob {
+  id               String   @id @default(cuid())
+  status           String
+  type             String
+  startedAt        DateTime @default(now())
+  completedAt      DateTime?
+  totalDevices     Int      @default(0)
+  processedDevices Int      @default(0)
+  createdAssets    Int      @default(0)
+  updatedAssets    Int      @default(0)
+  errors           Json?
+  config           Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  pendingActions PendingAction[]
+
+  @@index([status, startedAt])
+}
+
+model PendingAction {
+  id             String   @id @default(cuid())
+  syncJobId      String
+  syncJob        SyncJob  @relation(fields: [syncJobId], references: [id], onDelete: Cascade)
+
+  action         String
+  deviceId       String
+  deviceName     String
+  deviceIp       String?
+  tenantName     String
+
+  matchScore     Float?
+  matchedAssetId String?
+
+  status         String
+  approvedBy     String?
+  approvedAt     DateTime?
+
+  netboxData     Json
+  jumpserverData Json?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([syncJobId, status])
+  @@index([status, createdAt])
+}

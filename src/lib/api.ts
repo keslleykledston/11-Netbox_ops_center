@@ -354,6 +354,28 @@ export const api = {
       body: JSON.stringify({ url, apiKey, organizationId })
     });
   },
+  async jumpserverSyncStart(payload: { mode?: string; filters?: any; tenantId?: number; netboxUrl?: string; netboxToken?: string; threshold?: number }) {
+    return apiFetch(`/jumpserver/sync/start`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  },
+  async jumpserverSyncPending(jobId: string, status?: string) {
+    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
+    return apiFetch(`/jumpserver/sync/${jobId}/pending${qs}`, { method: 'GET' });
+  },
+  async jumpserverSyncApprove(actionId: string, payload: { action: 'approve' | 'reject'; tenantId?: number; netboxUrl?: string; netboxToken?: string }) {
+    return apiFetch(`/jumpserver/sync/pending/${actionId}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  },
+  async jumpserverSyncStatus(jobId: string) {
+    return apiFetch(`/jumpserver/sync/${jobId}/status`, { method: 'GET' });
+  },
+  async jumpserverSyncHistory(limit = 20) {
+    return apiFetch(`/jumpserver/sync/history?limit=${limit}`, { method: 'GET' });
+  },
 
   // HUB Backend (FastAPI) Integration
   hub: {

@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, Settings, Save, X, CheckCircle, AlertCircle, Loader2, Eye, EyeOff } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { useApplications } from "@/hooks/use-mobile";
 import type { Application } from "@/lib/utils";
@@ -53,6 +53,27 @@ const Applications = () => {
   const [auditing, setAuditing] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showHubModal, setShowHubModal] = useState(false);
+  const [syncAlert, setSyncAlert] = useState(false);
+
+  useEffect(() => {
+    if (!API_MODE) return;
+    let active = true;
+    const loadStatus = async () => {
+      try {
+        const res = await api.hub.getMovideskSyncStatus();
+        if (!active) return;
+        setSyncAlert(!!res?.has_discrepancies);
+      } catch {
+        if (active) setSyncAlert(false);
+      }
+    };
+    loadStatus();
+    const intervalId = window.setInterval(loadStatus, 10 * 60 * 1000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
 
   const testConnection = async (appId: string) => {
@@ -245,9 +266,14 @@ const Applications = () => {
           </div>
           {!adding ? (
             <div className="flex items-center gap-2">
-              <Button variant="outline" className="gap-2" onClick={() => setShowHubModal(true)}>
+              <Button variant="outline" className="gap-2 relative" onClick={() => setShowHubModal(true)}>
                 <Activity className="h-4 w-4" />
                 Sincronizar
+                {syncAlert && (
+                  <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-destructive text-[10px] font-bold text-white">
+                    !
+                  </span>
+                )}
               </Button>
               <Button className="gap-2" onClick={() => setAdding(true)}>
                 <Plus className="h-4 w-4" />

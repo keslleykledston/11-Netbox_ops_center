@@ -218,3 +218,117 @@ model OxidizedProxyLog {
 
   @@index([proxyId])
 }
+
+// Snapshot de empresas do Movidesk usadas para comparação/sincronização
+model MovideskCompany {
+  id           Int      @id @default(autoincrement())
+  movideskId   String   @unique
+  name         String
+  businessName String?
+  tradeName    String?
+  cnpj         String?
+  status       String?
+  isActive     Boolean  @default(true)
+  rawData      String?  // JSON string da resposta do Movidesk
+  lastSeenAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  syncActions MovideskSyncAction[]
+}
+
+// Snapshot de tenants do NetBox (origem externa)
+model NetboxTenantSnapshot {
+  id          Int      @id @default(autoincrement())
+  netboxId    Int      @unique
+  name        String
+  slug        String?
+  groupName   String?
+  erpId       String?
+  cnpj        String?
+  description String?
+  rawData     String?  // JSON string da resposta do NetBox
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sites   NetboxSiteSnapshot[]
+  devices NetboxDeviceSnapshot[]
+}
+
+// Snapshot de sites do NetBox
+model NetboxSiteSnapshot {
+  id            Int      @id @default(autoincrement())
+  netboxId      Int      @unique
+  name          String
+  slug          String?
+  status        String?
+  tenantNetboxId Int?
+  tenant        NetboxTenantSnapshot? @relation(fields: [tenantNetboxId], references: [netboxId])
+  rawData       String?  // JSON string da resposta do NetBox
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  devices NetboxDeviceSnapshot[]
+}
+
+// Snapshot de dispositivos do NetBox com dados de acesso e SNMP
+model NetboxDeviceSnapshot {
+  id            Int      @id @default(autoincrement())
+  netboxId      Int      @unique
+  name          String
+  ipAddress     String?
+  tenantNetboxId Int?
+  tenant        NetboxTenantSnapshot? @relation(fields: [tenantNetboxId], references: [netboxId])
+  siteNetboxId  Int?
+  site          NetboxSiteSnapshot? @relation(fields: [siteNetboxId], references: [netboxId])
+  platform      String?
+  serviceName   String?  // ssh, telnet, etc
+  servicePort   Int?
+  credUsername  String?
+  credPasswordEnc String?
+  snmpCommunity String?
+  snmpPort      Int?
+  rawData       String?  // JSON string da resposta do NetBox
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+// Snapshot de assets/hosts do JumpServer
+model JumpserverAssetSnapshot {
+  id          Int      @id @default(autoincrement())
+  jumpserverId String  @unique
+  name        String?
+  hostname    String?
+  ipAddress   String?
+  assetId     String?  // ID do asset/host quando disponível
+  hostId      String?
+  nodePath    String?
+  platform    String?
+  rawData     String?  // JSON string da resposta do JumpServer
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// Registro de comparação/sincronização Movidesk ↔ NetBox/JumpServer
+model MovideskSyncAction {
+  id               String   @id @default(cuid())
+  movideskCompanyId Int?
+  movideskCompany  MovideskCompany? @relation(fields: [movideskCompanyId], references: [id])
+  movideskId       String?
+  netboxTenantId   Int?
+  netboxTenantName String?
+  jumpserverNodePath String?
+  status           String
+  type             String
+  systems          String?  // JSON string de sistemas envolvidos
+  details          String?
+  payload          String?  // JSON string do payload completo
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([movideskCompanyId])
+}

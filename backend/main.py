@@ -7,6 +7,7 @@ from cachetools import TTLCache
 from pydantic import BaseModel
 
 from backend.core.config import settings
+from backend.core.db import init_db, close_db
 from backend.services.netbox_service import netbox_svc
 from backend.services.jumpserver_service import jumpserver_svc
 from backend.services.movidesk_service import movidesk_svc
@@ -15,6 +16,20 @@ from backend.services.sync_service import sync_svc
 
 
 logger = logging.getLogger(__name__)
+sync_task: Optional[asyncio.Task] = None
+
+
+async def movidesk_sync_loop():
+    interval = settings.MOVIDESK_SYNC_INTERVAL or 600
+    while True:
+        try:
+            if settings.MOVIDESK_SYNC_ENABLED:
+                await sync_svc.generate_sync_report(store_pending=False)
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("Falha ao executar varredura Movidesk periodica.")
+        await asyncio.sleep(interval)
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(levelname)s:%(name)s:%(message)s'
@@ -41,6 +56,28 @@ async def startup_event():
         await netbox_svc.ensure_custom_fields()
     except Exception:
         logger.exception("Falha ao inicializar integração com NetBox. HUB continuará carregando.")
+    try:
+        await init_db()
+    except Exception:
+        logger.exception("Falha ao inicializar banco local. Persistencia ficara desabilitada.")
+    global sync_task
+    if sync_task is None:
+        sync_task = asyncio.create_task(movidesk_sync_loop())
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    try:
+        await close_db()
+    except Exception:
+        logger.exception("Falha ao encerrar banco local.")
+    global sync_task
+    if sync_task:
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
+        sync_task = None
 
 
 # Models
@@ -193,6 +230,15 @@ async def get_movidesk_sync_report():
         "count": len(report),
         "actions": report
     }
+
+@app.get("/sync/movidesk/status")
+async def get_movidesk_sync_status():
+    """Resumo do ultimo scan Movidesk/NetBox/JumpServer."""
+    summary = sync_svc.get_last_report_summary()
+    if not summary.get("last_run"):
+        await sync_svc.generate_sync_report(store_pending=False)
+        summary = sync_svc.get_last_report_summary()
+    return summary
 
 @app.post("/sync/movidesk/approve")
 async def approve_movidesk_sync(action_ids: List[str]):

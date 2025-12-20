@@ -1,16 +1,41 @@
 import uuid
 import logging
 import re
+from datetime import datetime, timezone
 from typing import List, Dict, Any
 from backend.services.movidesk_service import movidesk_svc
 from backend.services.netbox_service import netbox_svc
 from backend.services.jumpserver_service import jumpserver_svc
+from backend.services.snapshot_store import (
+    upsert_movidesk_companies,
+    upsert_jumpserver_assets,
+    upsert_sync_actions,
+    update_sync_action_status,
+)
 
 logger = logging.getLogger(__name__)
 
 class SyncService:
     def __init__(self):
         self._pending_actions: Dict[str, Dict[str, Any]] = {}
+        self._last_report: List[Dict[str, Any]] = []
+        self._last_report_at = None
+
+    def get_last_report_summary(self) -> Dict[str, Any]:
+        if not self._last_report_at:
+            return {
+                "has_discrepancies": False,
+                "pending_count": 0,
+                "total": 0,
+                "last_run": None,
+            }
+        pending = [a for a in self._last_report if a.get("status") != "synced"]
+        return {
+            "has_discrepancies": len(pending) > 0,
+            "pending_count": len(pending),
+            "total": len(self._last_report),
+            "last_run": self._last_report_at.isoformat(),
+        }
 
     def _company_name_candidates(self, company: Dict[str, Any]) -> List[str]:
         keys = ("businessName", "companyName", "tradeName", "fantasyName", "name", "userName")
@@ -47,12 +72,22 @@ class SyncService:
                 return True
         return False
 
-    async def generate_sync_report(self) -> List[Dict[str, Any]]:
+    async def generate_sync_report(self, store_pending: bool = True) -> List[Dict[str, Any]]:
         """
         Compare systems and generate a report of pending actions.
         """
         try:
             movidesk_companies = await movidesk_svc.get_active_companies()
+            try:
+                await upsert_movidesk_companies(movidesk_companies)
+            except Exception as e:
+                logger.warning(f"Falha ao persistir Movidesk localmente: {e}")
+
+            js_assets = await jumpserver_svc.get_assets()
+            try:
+                await upsert_jumpserver_assets(js_assets)
+            except Exception as e:
+                logger.warning(f"Falha ao persistir JumpServer localmente: {e}")
             # User requirement: Only tenants from 'K3G Solutions' group
             netbox_tenants = await netbox_svc.get_tenants(**{"group-name": "K3G Solutions"})
             
@@ -74,7 +109,8 @@ class SyncService:
                 nb_by_name[t.name.upper().strip()] = t
  
             # Clear previous pending for fresh report
-            self._pending_actions.clear()
+            if store_pending:
+                self._pending_actions.clear()
             
             report = []
             for company in movidesk_companies:
@@ -112,7 +148,9 @@ class SyncService:
                         "systems": ["NetBox", "JumpServer", "Oxidized"],
                         "details": f"Cliente não encontrado. Criar novo Tenant '{name}' e infra associada."
                     }
-                    self._pending_actions[action_id] = action
+                    if store_pending:
+                        if store_pending:
+                            self._pending_actions[action_id] = action
                     report.append(action)
                 
                 elif fallback_match and not matching_tenant:
@@ -155,7 +193,8 @@ class SyncService:
                     if not js_exists:
                         action["systems"].append("JumpServer")
                         
-                    self._pending_actions[action_id] = action
+                    if store_pending:
+                        self._pending_actions[action_id] = action
                     report.append(action)
 
                 else:
@@ -216,6 +255,12 @@ class SyncService:
                             "details": "Sincronizado e validado (Nome idêntico e Node OK)."
                         })
 
+            try:
+                await upsert_sync_actions(report)
+            except Exception as e:
+                logger.warning(f"Falha ao persistir relatorio de sync: {e}")
+            self._last_report = report
+            self._last_report_at = datetime.now(timezone.utc)
             return report
         except Exception as e:
             logger.error(f"Error generating sync report: {e}")
@@ -260,6 +305,10 @@ class SyncService:
                     # For now we assume the group is ready or assigned in metadata.
                     
                     results.append({"id": aid, "status": "success", "client": action["client_name"]})
+                    try:
+                        await update_sync_action_status(aid, "success")
+                    except Exception as e:
+                        logger.warning(f"Falha ao atualizar sync action {aid}: {e}")
                     del self._pending_actions[aid]
 
                 elif action["type"] == "update_client":
@@ -316,6 +365,10 @@ class SyncService:
                         await jumpserver_svc.ensure_node_path(node_path)
 
                         results.append({"id": aid, "status": "success", "client": action["client_name"], "message": "Tenant criado no Netbox e node criado no Jumpserver"})
+                        try:
+                            await update_sync_action_status(aid, "success", "Tenant criado no Netbox e node criado no Jumpserver")
+                        except Exception as e:
+                            logger.warning(f"Falha ao atualizar sync action {aid}: {e}")
                         del self._pending_actions[aid]
                         continue
                     else:
@@ -364,14 +417,26 @@ class SyncService:
                             "message": f"Sincronizado parcial. Conflito em: {', '.join(conflicts)}",
                             "client": action["client_name"]
                         })
+                        try:
+                            await update_sync_action_status(aid, "warning", f"Sincronizado parcial. Conflito em: {', '.join(conflicts)}")
+                        except Exception as e:
+                            logger.warning(f"Falha ao atualizar sync action {aid}: {e}")
                     else:
                         results.append({"id": aid, "status": "success", "client": action["client_name"]})
+                        try:
+                            await update_sync_action_status(aid, "success")
+                        except Exception as e:
+                            logger.warning(f"Falha ao atualizar sync action {aid}: {e}")
 
                     del self._pending_actions[aid]
 
             except Exception as e:
                 logger.error(f"Error executing action {aid}: {e}")
                 results.append({"id": aid, "status": "error", "message": str(e)})
+                try:
+                    await update_sync_action_status(aid, "error", str(e))
+                except Exception as err:
+                    logger.warning(f"Falha ao atualizar sync action {aid}: {err}")
         
         return results
 

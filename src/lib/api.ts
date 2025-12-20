@@ -375,6 +375,9 @@ export const api = {
     async getMovideskSyncReport() {
       return this.fetch("/sync/movidesk/report");
     },
+    async getMovideskSyncStatus() {
+      return this.fetch("/sync/movidesk/status");
+    },
     async approveMovideskSync(actionIds: string[]) {
       return this.fetch("/sync/movidesk/approve", {
         method: "POST",

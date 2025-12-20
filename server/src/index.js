@@ -2115,7 +2115,7 @@ app.post("/netbox/sync", requireAuth, async (req, res) => {
     }
 
     const job = await addNetboxSyncJob({
-      resources: resources && resources.length ? resources : ['tenants', 'devices'],
+      resources: resources && resources.length ? resources : ['tenants', 'sites', 'devices'],
       url: urlOverride || process.env.NETBOX_URL,
       token: tokenOverride || process.env.NETBOX_TOKEN,
       deviceFilters: deviceFilters || null,

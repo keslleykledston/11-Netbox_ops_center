@@ -6,6 +6,9 @@ class Settings(BaseSettings):
     # App Settings
     APP_NAME: str = "Netbox Ops Center HUB"
     DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    # Banco de dados local (Postgres)
+    DATABASE_URL: Optional[str] = None
     
     # NetBox
     NETBOX_URL: str = ""

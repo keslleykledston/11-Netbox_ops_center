@@ -85,6 +85,7 @@ services:
       - server/.env
     environment:
       OXIDIZED_API_URL: http://oxidized:8888
+      DATABASE_URL: ${DATABASE_URL:-postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops}
     volumes:
       - ./backend:/app/backend
     command: >-

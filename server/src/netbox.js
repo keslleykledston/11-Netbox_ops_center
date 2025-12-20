@@ -97,7 +97,7 @@ async function fetchAllServices(url, token) {
 export async function syncFromNetbox(prisma, { url, token, resources = ["tenants", "devices"], tenantScopeId, deviceFilters, defaultCredentials = {} }) {
   if (!url || !token) throw new Error("NETBOX_URL/NETBOX_TOKEN ausentes");
 
-  const result = { tenants: 0, devices: 0 };
+  const result = { tenants: 0, devices: 0, sites: 0 };
   const GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || "K3G Solutions";
   let allowedTenants = new Set();
   const normalize = (str) => String(str || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
@@ -110,10 +110,38 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       return !GROUP_FILTER || gname === GROUP_FILTER;
     });
     for (const t of filtered) {
+      const cf = t.custom_fields || {};
+      const erpId = cf?.ERP_ID || cf?.erp_id || cf?.movidesk_id || null;
+      const cnpj = cf?.CNPJ || cf?.cnpj || null;
+
       await prisma.tenant.upsert({
         where: { name: t.name },
         update: { description: t.description || null, tenantGroup: t?.group?.name || null },
         create: { name: t.name, description: t.description || null, tenantGroup: t?.group?.name || null },
+      });
+      await prisma.netboxTenantSnapshot.upsert({
+        where: { netboxId: t.id },
+        update: {
+          name: t.name,
+          slug: t.slug || null,
+          groupName: t?.group?.name || t?.tenant_group?.name || null,
+          erpId: erpId ? String(erpId) : null,
+          cnpj: cnpj ? String(cnpj) : null,
+          description: t.description || null,
+          rawData: JSON.stringify(t),
+          lastSeenAt: new Date(),
+        },
+        create: {
+          netboxId: t.id,
+          name: t.name,
+          slug: t.slug || null,
+          groupName: t?.group?.name || t?.tenant_group?.name || null,
+          erpId: erpId ? String(erpId) : null,
+          cnpj: cnpj ? String(cnpj) : null,
+          description: t.description || null,
+          rawData: JSON.stringify(t),
+          lastSeenAt: new Date(),
+        },
       });
       allowedTenants.add(t.name);
       result.tenants++;
@@ -125,6 +153,33 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
     for (const t of tenants) {
       const gname = t?.group?.name || t?.tenant_group?.name || null;
       if (gname === GROUP_FILTER) allowedTenants.add(t.name);
+    }
+  }
+
+  if (resources.includes("sites")) {
+    const sites = await fetchList(`${url}/api/dcim/sites/?limit=1000`, token);
+    for (const s of sites) {
+      await prisma.netboxSiteSnapshot.upsert({
+        where: { netboxId: s.id },
+        update: {
+          name: s.name,
+          slug: s.slug || null,
+          status: s.status?.value || s.status || null,
+          tenantNetboxId: s.tenant?.id || null,
+          rawData: JSON.stringify(s),
+          lastSeenAt: new Date(),
+        },
+        create: {
+          netboxId: s.id,
+          name: s.name,
+          slug: s.slug || null,
+          status: s.status?.value || s.status || null,
+          tenantNetboxId: s.tenant?.id || null,
+          rawData: JSON.stringify(s),
+          lastSeenAt: new Date(),
+        },
+      });
+      result.sites++;
     }
   }
 
@@ -185,6 +240,8 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       const ip = d.primary_ip?.address?.split("/")?.[0] || d.primary_ip4?.address?.split("/")?.[0] || "";
       const name = d.name || d.display || `Device-${d.id}`;
       let sshPort = null;
+      let serviceName = null;
+      let servicePort = null;
 
       // Custom Fields Mapping
       const cf = d.custom_fields || {};
@@ -192,16 +249,24 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       const backupEnabled = !!(cf["Backup"] || cf["backup"]);
       const isProduction = !!(cf["Production"] || cf["production"]);
       const jumpserverId = cf["ID do Jumpserver"] || cf["jumpserver_id"] || cf["JS_DEVICE_ID"] || null;
+      const snmpCommunityCf = cf["SNMP Community"] || cf["snmpCommunity"] || cf["snmp_community"] || cf["snmpcommunity"] || null;
+      const snmpPortCf = cf["SNMP Port"] || cf["snmpPort"] || cf["snmp_port"] || null;
 
       // Credentials Logic
       let credUsername = cf["username"] || cf["Username"] || null;
       let credPassword = cf["password"] || cf["Password"] || null;
+      let netboxCredUsername = credUsername;
+      let netboxCredPassword = credPassword;
 
       // If not in custom fields, try config_context from device object
       if (!credUsername && d.config_context) {
         credUsername = d.config_context.username || d.config_context.user || null;
         credPassword = d.config_context.password || d.config_context.pass || null;
       }
+      if (!netboxCredUsername && credUsername) netboxCredUsername = credUsername;
+      if (!netboxCredPassword && credPassword) netboxCredPassword = credPassword;
+      let snmpCommunity = snmpCommunityCf || d.config_context?.snmp_community || d.config_context?.snmpCommunity || null;
+      let snmpPort = snmpPortCf || d.config_context?.snmp_port || d.config_context?.snmpPort || null;
 
       // If still not found and we have an ID, try fetching rendered config context
       if (!credUsername && d.id) {
@@ -209,6 +274,10 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         if (cc) {
           credUsername = cc.username || cc.user || null;
           credPassword = cc.password || cc.pass || null;
+          if (!snmpCommunity) snmpCommunity = cc.snmp_community || cc.snmpCommunity || null;
+          if (!snmpPort) snmpPort = cc.snmp_port || cc.snmpPort || null;
+          if (!netboxCredUsername && credUsername) netboxCredUsername = credUsername;
+          if (!netboxCredPassword && credPassword) netboxCredPassword = credPassword;
         }
       }
 
@@ -220,6 +289,8 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
           if (!credPassword && secrets.password) credPassword = secrets.password;
           // Also update SSH port if found in secrets and not yet set
           if (!sshPort && secrets.sshPort) sshPort = secrets.sshPort;
+          if (!netboxCredUsername && secrets.username) netboxCredUsername = secrets.username;
+          if (!netboxCredPassword && secrets.password) netboxCredPassword = secrets.password;
         }
       }
 
@@ -232,6 +303,11 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         const services = servicesMap.get(d.id);
         if (services?.sshPort) {
           sshPort = services.sshPort;
+          serviceName = "ssh";
+          servicePort = services.sshPort;
+        } else if (services?.telnetPort) {
+          serviceName = "telnet";
+          servicePort = services.telnetPort;
         }
       }
 
@@ -239,9 +315,20 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       if (!sshPort) {
         sshPort = Number(cf["ssh_port"] || cf["SSH Port"] || 22);
       }
+      if (!servicePort && sshPort) {
+        serviceName = serviceName || "ssh";
+        servicePort = sshPort;
+      }
+      if (snmpPort !== null && snmpPort !== undefined && snmpPort !== "") {
+        const parsedSnmp = Number(snmpPort);
+        snmpPort = Number.isNaN(parsedSnmp) ? null : parsedSnmp;
+      } else {
+        snmpPort = null;
+      }
 
       // Determine Oxidized Model (Platform/Driver)
       const oxidizedModel = getOxidizedModel(d);
+      const netboxPlatform = platformSlug || platformName || null;
 
       const updateData = {
         hostname: d.name || null,
@@ -268,6 +355,8 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         updateData.credPasswordEnc = encryptSecret(credPassword);
         updateData.credUpdatedAt = new Date();
       }
+      if (snmpCommunity) updateData.snmpCommunity = String(snmpCommunity);
+      if (snmpPort !== null) updateData.snmpPort = snmpPort;
 
       const existing = await prisma.device.findFirst({
         where: { name, tenantId: tenant.id },
@@ -296,6 +385,41 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
           data: createData,
         });
       }
+
+      await prisma.netboxDeviceSnapshot.upsert({
+        where: { netboxId: d.id },
+        update: {
+          name,
+          ipAddress: ip || null,
+          tenantNetboxId: d.tenant?.id || null,
+          siteNetboxId: d.site?.id || null,
+          platform: netboxPlatform,
+          serviceName,
+          servicePort,
+          credUsername: netboxCredUsername || null,
+          credPasswordEnc: netboxCredPassword ? encryptSecret(netboxCredPassword) : null,
+          snmpCommunity: snmpCommunity ? String(snmpCommunity) : null,
+          snmpPort,
+          rawData: JSON.stringify(d),
+          lastSeenAt: new Date(),
+        },
+        create: {
+          netboxId: d.id,
+          name,
+          ipAddress: ip || null,
+          tenantNetboxId: d.tenant?.id || null,
+          siteNetboxId: d.site?.id || null,
+          platform: netboxPlatform,
+          serviceName,
+          servicePort,
+          credUsername: netboxCredUsername || null,
+          credPasswordEnc: netboxCredPassword ? encryptSecret(netboxCredPassword) : null,
+          snmpCommunity: snmpCommunity ? String(snmpCommunity) : null,
+          snmpPort,
+          rawData: JSON.stringify(d),
+          lastSeenAt: new Date(),
+        },
+      });
 
       result.devices++;
     }

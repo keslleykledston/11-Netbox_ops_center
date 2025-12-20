@@ -101,7 +101,7 @@ async function resolveJumpserverConfig({ tenantId, url, apiKey, organizationId }
     const app = await prisma.application.findFirst({
       where: {
         tenantId,
-        name: 'Jumpserver',
+        name: { contains: 'jumpserver', mode: 'insensitive' },
       },
     });
     if (app) {
@@ -117,6 +117,25 @@ async function resolveJumpserverConfig({ tenantId, url, apiKey, organizationId }
         organizationId: parsedConfig.organizationId || null,
       };
     }
+  }
+
+  const fallbackApp = await prisma.application.findFirst({
+    where: {
+      name: { contains: 'jumpserver', mode: 'insensitive' },
+    },
+  });
+  if (fallbackApp) {
+    let parsedConfig = {};
+    if (fallbackApp.config) {
+      try {
+        parsedConfig = JSON.parse(fallbackApp.config);
+      } catch { }
+    }
+    return {
+      url: fallbackApp.url,
+      apiKey: fallbackApp.apiKey,
+      organizationId: parsedConfig.organizationId || null,
+    };
   }
 
   if (process.env.JUMPSERVER_URL && (process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY)) {

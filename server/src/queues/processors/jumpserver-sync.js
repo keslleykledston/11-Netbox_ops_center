@@ -27,6 +27,9 @@ export async function processJumpserverSync(job) {
   if (!syncJobId || !Array.isArray(devices)) {
     throw new Error('syncJobId e devices sao obrigatorios');
   }
+  if (!jumpserverConfig?.url || !jumpserverConfig?.apiKey) {
+    throw new Error('Jumpserver config ausente');
+  }
 
   const client = new JumpserverClient({
     baseUrl: jumpserverConfig?.url,

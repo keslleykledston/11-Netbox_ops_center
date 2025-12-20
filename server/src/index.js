@@ -88,28 +88,46 @@ async function resolveNetboxConfig({ url, token }) {
   return resolvedUrl && resolvedToken ? { url: resolvedUrl, token: resolvedToken } : null;
 }
 
-async function resolveJumpserverConfig(tenantId) {
-  if (!tenantId) return null;
-  const app = await prisma.application.findFirst({
-    where: {
-      tenantId,
-      name: 'Jumpserver',
-    },
-  });
-  if (!app) return null;
-
-  let parsedConfig = {};
-  if (app.config) {
-    try {
-      parsedConfig = JSON.parse(app.config);
-    } catch { }
+async function resolveJumpserverConfig({ tenantId, url, apiKey, organizationId } = {}) {
+  if (url && apiKey) {
+    return {
+      url,
+      apiKey,
+      organizationId: organizationId || null,
+    };
   }
 
-  return {
-    url: app.url,
-    apiKey: app.apiKey,
-    organizationId: parsedConfig.organizationId || null,
-  };
+  if (tenantId) {
+    const app = await prisma.application.findFirst({
+      where: {
+        tenantId,
+        name: 'Jumpserver',
+      },
+    });
+    if (app) {
+      let parsedConfig = {};
+      if (app.config) {
+        try {
+          parsedConfig = JSON.parse(app.config);
+        } catch { }
+      }
+      return {
+        url: app.url,
+        apiKey: app.apiKey,
+        organizationId: parsedConfig.organizationId || null,
+      };
+    }
+  }
+
+  if (process.env.JUMPSERVER_URL && (process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY)) {
+    return {
+      url: process.env.JUMPSERVER_URL,
+      apiKey: process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY,
+      organizationId: process.env.JUMPSERVER_ORG_ID || null,
+    };
+  }
+
+  return null;
 }
 
 // Simple startup validation and summary
@@ -1975,7 +1993,12 @@ app.post('/jumpserver/sync/start', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Tenant ID obrigatorio' });
     }
 
-    const jumpserverConfig = await resolveJumpserverConfig(tenantId);
+    const jumpserverConfig = await resolveJumpserverConfig({
+      tenantId,
+      url: req.body?.jumpserverUrl,
+      apiKey: req.body?.jumpserverApiKey,
+      organizationId: req.body?.jumpserverOrgId,
+    });
     if (!jumpserverConfig) {
       return res.status(404).json({ error: 'Jumpserver nao configurado' });
     }
@@ -2129,7 +2152,12 @@ app.post('/jumpserver/sync/pending/:actionId/approve', requireAuth, async (req, 
       return res.status(400).json({ error: 'Tenant ID obrigatorio' });
     }
 
-    const jumpserverConfig = await resolveJumpserverConfig(tenantId);
+    const jumpserverConfig = await resolveJumpserverConfig({
+      tenantId,
+      url: req.body?.jumpserverUrl,
+      apiKey: req.body?.jumpserverApiKey,
+      organizationId: req.body?.jumpserverOrgId,
+    });
     if (!jumpserverConfig) {
       return res.status(404).json({ error: 'Jumpserver nao configurado' });
     }

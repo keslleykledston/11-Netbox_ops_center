@@ -354,7 +354,7 @@ export const api = {
       body: JSON.stringify({ url, apiKey, organizationId })
     });
   },
-  async jumpserverSyncStart(payload: { mode?: string; filters?: any; tenantId?: number; netboxUrl?: string; netboxToken?: string; threshold?: number }) {
+  async jumpserverSyncStart(payload: { mode?: string; filters?: any; tenantId?: number; netboxUrl?: string; netboxToken?: string; threshold?: number; jumpserverUrl?: string; jumpserverApiKey?: string; jumpserverOrgId?: string }) {
     return apiFetch(`/jumpserver/sync/start`, {
       method: 'POST',
       body: JSON.stringify(payload || {}),

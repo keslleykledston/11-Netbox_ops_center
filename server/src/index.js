@@ -39,6 +39,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = path.resolve(__dirname, '..', '..');
+const ENV_PATH = path.join(ROOT_DIR, '.env');
 
 const prisma = new PrismaClient();
 const app = express();
@@ -88,6 +90,106 @@ function resolveJumpserverFieldKey(customFields = {}) {
     if (jumpserverFieldCandidates.has(normalizeFieldKey(key))) return key;
   }
   return null;
+}
+
+function formatEnvValue(value) {
+  let str = String(value ?? '');
+  str = str.replace(/\r?\n/g, '\\n');
+  if (/[\\s#"]/g.test(str)) {
+    const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    return `"${escaped}"`;
+  }
+  return str;
+}
+
+async function updateEnvFile(updates = {}) {
+  const entries = Object.entries(updates).filter(([, value]) => typeof value === 'string' && value.trim() !== '');
+  if (entries.length === 0) return;
+
+  let content = '';
+  try {
+    content = await fs.readFile(ENV_PATH, 'utf8');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      throw err;
+    }
+    content = '';
+  }
+
+  const lines = content.trim().length > 0 ? content.split(/\r?\n/) : [];
+  const found = new Set();
+  const nextLines = lines.map((line) => {
+    for (const [key, value] of entries) {
+      const regex = new RegExp(`^\\s*${key}=`);
+      if (regex.test(line)) {
+        found.add(key);
+        return `${key}=${formatEnvValue(value)}`;
+      }
+    }
+    return line;
+  });
+
+  for (const [key, value] of entries) {
+    if (!found.has(key)) {
+      nextLines.push(`${key}=${formatEnvValue(value)}`);
+    }
+  }
+
+  const nextContent = `${nextLines.join('\n')}\n`;
+  await fs.writeFile(ENV_PATH, nextContent, 'utf8');
+}
+
+function buildEnvUpdatesFromApplication({ name, url, apiKey, config, username, password }) {
+  const updates = {};
+  const appName = String(name || '').toLowerCase();
+  const urlValue = typeof url === 'string' && url.trim() ? url.trim() : null;
+  const apiValue = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : null;
+  let configObj = {};
+
+  if (config) {
+    try {
+      configObj = typeof config === 'string' ? JSON.parse(config) : config;
+    } catch {
+      configObj = {};
+    }
+  }
+
+  const cfgUser = username ?? configObj?.username ?? null;
+  const cfgPass = password ?? configObj?.password ?? null;
+
+  if (appName.includes('netbox')) {
+    if (urlValue) updates.NETBOX_URL = urlValue;
+    if (apiValue) updates.NETBOX_TOKEN = apiValue;
+  }
+  if (appName.includes('jumpserver')) {
+    if (urlValue) updates.JUMPSERVER_URL = urlValue;
+    if (apiValue) updates.JUMPSERVER_TOKEN = apiValue;
+    if (cfgUser) updates.JUMPSERVER_USERNAME = String(cfgUser);
+    if (cfgPass) updates.JUMPSERVER_PASSWORD = String(cfgPass);
+  }
+  if (appName.includes('movidesk')) {
+    if (urlValue) updates.MOVIDESK_API_URL = urlValue;
+    if (apiValue) updates.MOVIDESK_TOKEN = apiValue;
+  }
+  if (appName.includes('librenms')) {
+    if (urlValue) updates.LIBRENMS_URL = urlValue;
+    if (apiValue) updates.LIBRENMS_API_TOKEN = apiValue;
+  }
+  if (appName.includes('oxidized')) {
+    if (urlValue) updates.OXIDIZED_API_URL = urlValue;
+  }
+
+  return updates;
+}
+
+async function persistApplicationEnv({ name, url, apiKey, config, username, password }) {
+  const updates = buildEnvUpdatesFromApplication({ name, url, apiKey, config, username, password });
+  if (Object.keys(updates).length === 0) return;
+  try {
+    await updateEnvFile(updates);
+  } catch (err) {
+    console.warn('[ENV][WARN] Failed to update .env:', err?.message || err);
+  }
 }
 
 async function fetchNetboxDeviceCustomFields({ url, token, deviceId }) {
@@ -1566,6 +1668,14 @@ app.post("/applications", requireAuth, async (req, res) => {
   const created = await prisma.application.create({
     data: { tenantId, name, url, apiKey, status, description, config: configStr },
   });
+  await persistApplicationEnv({
+    name: created.name,
+    url: created.url,
+    apiKey: created.apiKey,
+    config: created.config,
+    username,
+    password,
+  });
   res.status(201).json(created);
 });
 
@@ -1624,6 +1734,12 @@ app.patch("/applications/:id", requireAuth, async (req, res) => {
   }
 
   const updated = await prisma.application.update({ where: { id }, data });
+  await persistApplicationEnv({
+    name: updated.name,
+    url: updated.url,
+    apiKey: updated.apiKey,
+    config: updated.config,
+  });
   res.json(updated);
 });
 

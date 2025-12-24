@@ -179,7 +179,7 @@ install_bare_dependencies() {
   log "Instalando dependências npm (bare-metal)..."
   run_as_app "cd '$APP_DIR' && npm install"
   run_as_app "cd '$APP_DIR' && npm run server:install"
-  run_as_app "cd '$APP_DIR' && npm run db:push"
+  run_as_app "cd '$APP_DIR' && npm run db:migrate"
 }
 
 ensure_oxidized_tree() {

@@ -11,6 +11,7 @@
     "start:scheduler": "node src/scheduler.js",
     "test": "vitest --run",
     "db:push": "node scripts/prisma-cli.js db push",
+    "db:migrate": "node scripts/prisma-cli.js migrate deploy",
     "db:studio": "node scripts/prisma-cli.js studio",
     "prisma:generate": "node scripts/prisma-cli.js generate"
   },

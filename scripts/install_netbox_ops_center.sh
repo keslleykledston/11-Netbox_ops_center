@@ -175,7 +175,7 @@ bare_install() {
   log "[+] Installing dependencies"
   npm install
   npm run server:install
-  npm run db:push
+  npm run db:migrate
 
   log "[+] Starting the stack (web+api+snmp) in background"
   nohup bash -lc "npm run dev:stack" > /var/log/netbox-ops-center.log 2>&1 &

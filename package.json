@@ -14,6 +14,7 @@
     "server:dev": "npm --prefix server run dev",
     "server:test": "npm --prefix server run test",
     "db:push": "npm --prefix server run db:push",
+    "db:migrate": "npm --prefix server run db:migrate",
     "db:studio": "npm --prefix server run db:studio",
     "dev:api-web": "concurrently -k -n api,web -c cyan,green \"npm run server:dev\" \"npm run dev\"",
     "dev:all": "concurrently -k -n api,snmp,web -c cyan,magenta,green \"npm run server:dev\" \"npm run snmp-server\" \"npm run dev\"",

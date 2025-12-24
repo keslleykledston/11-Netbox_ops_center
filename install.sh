@@ -2,7 +2,7 @@
 # NetBox Ops Center - Interactive Installer
 # Installs Docker, Portainer, Oxidized, and the Web App with Nginx Reverse Proxy.
 
-set -u
+set -euo pipefail
 
 LOG_FILE="install_log.txt"
 exec > >(tee -a "$LOG_FILE") 2>&1
@@ -29,6 +29,108 @@ warn() {
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
     exit 1
+}
+
+OS_ID=""
+OS_LIKE=""
+PKG_MANAGER=""
+UPDATE_CMD=""
+INSTALL_CMD=""
+
+ensure_root() {
+    if [[ $EUID -ne 0 ]]; then
+        if command -v sudo >/dev/null 2>&1; then
+            log "Re-executing with sudo..."
+            exec sudo -E bash "$0" "$@"
+        else
+            error "This script must be run as root (sudo not available)."
+        fi
+    fi
+}
+
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        OS_ID="${ID:-unknown}"
+        OS_LIKE="${ID_LIKE:-}"
+    else
+        OS_ID="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        OS_LIKE=""
+    fi
+
+    if [[ "$OS_ID" == "darwin" || "$OS_ID" == "macos" ]]; then
+        error "macOS is not supported by this installer. Use Docker Desktop manually."
+    fi
+
+    log "Detected OS: ${OS_ID} ${OS_LIKE}"
+}
+
+detect_package_manager() {
+    if command -v apt-get >/dev/null 2>&1; then
+        PKG_MANAGER="apt"
+        UPDATE_CMD="apt-get update -y"
+        INSTALL_CMD="apt-get install -y"
+    elif command -v dnf >/dev/null 2>&1; then
+        PKG_MANAGER="dnf"
+        UPDATE_CMD="dnf -y makecache"
+        INSTALL_CMD="dnf -y install"
+    elif command -v yum >/dev/null 2>&1; then
+        PKG_MANAGER="yum"
+        UPDATE_CMD="yum -y makecache"
+        INSTALL_CMD="yum -y install"
+    elif command -v zypper >/dev/null 2>&1; then
+        PKG_MANAGER="zypper"
+        UPDATE_CMD="zypper refresh -y"
+        INSTALL_CMD="zypper install -y"
+    elif command -v pacman >/dev/null 2>&1; then
+        PKG_MANAGER="pacman"
+        UPDATE_CMD="pacman -Sy --noconfirm"
+        INSTALL_CMD="pacman -S --noconfirm"
+    else
+        error "No supported package manager found."
+    fi
+}
+
+install_packages() {
+    local packages=("$@")
+    if [[ -z "$PKG_MANAGER" ]]; then
+        detect_package_manager
+    fi
+    log "Installing packages (${PKG_MANAGER}): ${packages[*]}"
+    $UPDATE_CMD >/dev/null 2>&1 || warn "Failed to update package index."
+    $INSTALL_CMD "${packages[@]}" >/dev/null 2>&1 || error "Failed to install packages: ${packages[*]}"
+}
+
+install_prereqs() {
+    log "Installing OS prerequisites..."
+    case "$PKG_MANAGER" in
+        apt)
+            install_packages ca-certificates curl gnupg lsb-release git jq openssl
+            ;;
+        dnf|yum)
+            install_packages ca-certificates curl gnupg2 git jq openssl
+            ;;
+        zypper)
+            install_packages ca-certificates curl gpg2 git jq openssl
+            ;;
+        pacman)
+            install_packages ca-certificates curl gnupg git jq openssl
+            ;;
+        *)
+            warn "Unknown package manager. Skipping prerequisite install."
+            ;;
+    esac
+}
+
+run_compose() {
+    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    else
+        error "Docker Compose not found."
+    fi
 }
 
 # Progress Bar
@@ -66,22 +168,50 @@ install_docker() {
         success "Docker is already installed."
     else
         log "Installing Docker..."
-        curl -fsSL https://get.docker.com | sh
-        success "Docker installed successfully."
+        if ! command -v curl >/dev/null 2>&1; then
+            install_packages curl
+        fi
+        if curl -fsSL https://get.docker.com | sh; then
+            success "Docker installed successfully."
+        else
+            warn "get.docker.com failed. Trying distro packages..."
+            case "$PKG_MANAGER" in
+                apt) install_packages docker.io ;;
+                dnf|yum) install_packages docker ;;
+                zypper) install_packages docker ;;
+                pacman) install_packages docker ;;
+                *) error "Docker install failed on this distro." ;;
+            esac
+        fi
     fi
 
-    if command -v docker compose >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable --now docker >/dev/null 2>&1 || warn "Failed to enable/start Docker."
+    fi
+
+    if docker compose version >/dev/null 2>&1; then
         success "Docker Compose is available."
+    elif command -v docker-compose >/dev/null 2>&1; then
+        success "docker-compose is available."
     else
         log "Installing Docker Compose..."
-        apt-get update && apt-get install -y docker-compose-plugin || error "Failed to install Docker Compose plugin"
-        success "Docker Compose installed."
+        case "$PKG_MANAGER" in
+            apt) install_packages docker-compose-plugin ;;
+            dnf|yum) install_packages docker-compose-plugin ;;
+            zypper) install_packages docker-compose ;;
+            pacman) install_packages docker-compose ;;
+            *) error "Failed to install Docker Compose on this distro." ;;
+        esac
+        if ! docker compose version >/dev/null 2>&1 && ! command -v docker-compose >/dev/null 2>&1; then
+            error "Docker Compose not available after install."
+        fi
     fi
 }
 
 configure_docker() {
     log "Configuring Docker for Legacy API support..."
     local daemon_json="/etc/docker/daemon.json"
+    mkdir -p /etc/docker
     
     if [ -f "$daemon_json" ]; then
         warn "$daemon_json already exists. Please manually ensure 'min-api-version': '1.24' is set."
@@ -137,11 +267,36 @@ EOF
             touch .env.local
         fi
     fi
+
+    # Ensure default admin credentials for new installations
+    if [ ! -f .env.local ]; then
+        touch .env.local
+    fi
+    if ! grep -q '^DEFAULT_ADMIN_EMAIL=' .env.local 2>/dev/null; then
+        echo "DEFAULT_ADMIN_EMAIL=suporte@suporte.com.br" >> .env.local
+    fi
+    if ! grep -q '^DEFAULT_ADMIN_USERNAME=' .env.local 2>/dev/null; then
+        echo "DEFAULT_ADMIN_USERNAME=admin" >> .env.local
+    fi
+    if ! grep -q '^DEFAULT_ADMIN_PASSWORD=' .env.local 2>/dev/null; then
+        echo "DEFAULT_ADMIN_PASSWORD=Ops_pass_" >> .env.local
+    fi
 }
 
 install_dependencies() {
     if ! command -v npm >/dev/null 2>&1; then
-        warn "npm não encontrado no PATH. Pulando instalação das dependências Node."
+        warn "npm nao encontrado. Instalando Node.js..."
+        case "$PKG_MANAGER" in
+            apt) install_packages nodejs npm ;;
+            dnf|yum) install_packages nodejs npm ;;
+            zypper) install_packages nodejs npm ;;
+            pacman) install_packages nodejs npm ;;
+            *) warn "Nao foi possivel instalar Node.js automaticamente." ;;
+        esac
+    fi
+
+    if ! command -v npm >/dev/null 2>&1; then
+        warn "npm nao encontrado no PATH. Pulando instalacao das dependencias Node."
         return
     fi
 
@@ -181,10 +336,10 @@ initialize_oxidized() {
 start_services() {
     log "Starting services with Docker Compose..."
     log "  - Pulling latest images..."
-    docker compose pull
+    run_compose pull
 
     log "  - Starting containers..."
-    docker compose up -d --remove-orphans
+    run_compose up -d --remove-orphans
 
     if [ $? -eq 0 ]; then
         success "Services started successfully."
@@ -193,11 +348,27 @@ start_services() {
     fi
 }
 
+run_migrations() {
+    log "Applying database migrations..."
+    local attempt=1
+    local max_attempts=5
+    while [ $attempt -le $max_attempts ]; do
+        if run_compose exec -T backend npm --prefix server run db:migrate; then
+            success "Migrations applied."
+            return 0
+        fi
+        warn "Migration attempt ${attempt}/${max_attempts} failed. Retrying..."
+        attempt=$((attempt + 1))
+        sleep 3
+    done
+    warn "Failed to apply migrations automatically. Run 'npm --prefix server run db:migrate' inside the backend container."
+}
+
 verify_installation() {
     log "Verifying installation..."
     sleep 5
     
-    if docker compose ps | grep "Up"; then
+    if run_compose ps | grep -q "Up"; then
         success "Containers are running."
     else
         warn "Some containers might not be running. Check 'docker compose ps'."
@@ -211,18 +382,21 @@ main() {
     echo "=================================================="
     echo ""
     
-    # check_root # Commented out for development/testing in non-root env if needed, but required for docker install
+    ensure_root "$@"
+    detect_os
+    detect_package_manager
+    install_prereqs
     
     log "Starting installation..."
 
     # 1. Docker Check/Install
-    log "Step 1/5: Checking Docker installation..."
+    log "Step 1/6: Checking Docker installation..."
     install_docker
     configure_docker
     progress_bar 2
 
     # 2. Environment Setup
-    log "Step 2/5: Setting up environment..."
+    log "Step 2/6: Setting up environment..."
     setup_environment
     progress_bar 1
 
@@ -242,7 +416,8 @@ main() {
     progress_bar 5
 
     # 6. Verify
-    log "Step 6/6: Verifying installation..."
+    log "Step 6/6: Applying migrations and verifying installation..."
+    run_migrations
     verify_installation
     
     echo ""
@@ -255,8 +430,10 @@ main() {
     echo " - Oxidized:  http://localhost/oxidized/"
     echo ""
     echo "Next steps:"
-    echo " 1. Access the dashboard and login with default credentials"
-    echo "    (Check README.md for details)"
+    echo " 1. Access the dashboard and login with default credentials:"
+    echo "    - Email: suporte@suporte.com.br"
+    echo "    - Username: admin"
+    echo "    - Senha: Ops_pass_"
     echo " 2. Configure Oxidized in the Applications tab"
     echo "    - Add application: Name='Oxidized', URL='http://oxidized:8888'"
     echo " 3. Enable backup for devices in the Backup tab"

@@ -437,7 +437,9 @@ verify_installation() {
 }
 
 main() {
-    clear
+    if command -v clear >/dev/null 2>&1; then
+        clear 2>/dev/null || true
+    fi
     echo "=================================================="
     echo "   NetBox Ops Center - Installation Wizard"
     echo "=================================================="

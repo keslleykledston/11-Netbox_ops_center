@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, Iterable, List, Optional
 
 from backend.core.db import get_pool
@@ -10,6 +11,129 @@ def _first_name(company: Dict[str, Any]) -> Optional[str]:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def _is_snapshot_fresh(last_seen: Optional[Any], ttl_seconds: int) -> bool:
+    if not last_seen:
+        return False
+    if isinstance(last_seen, str):
+        try:
+            last_seen = datetime.fromisoformat(last_seen)
+        except ValueError:
+            return False
+    if not isinstance(last_seen, datetime):
+        return False
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return now - last_seen <= timedelta(seconds=ttl_seconds)
+
+
+async def load_movidesk_snapshot_companies(ttl_seconds: int, allow_stale: bool = False) -> Optional[List[Dict[str, Any]]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "MovideskCompany"')
+        if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
+            return None
+        rows = await conn.fetch(
+            'SELECT "movideskId", "name", "businessName", "tradeName", "cnpj", "rawData" FROM "MovideskCompany" WHERE "isActive" = true'
+        )
+    companies: List[Dict[str, Any]] = []
+    for row in rows:
+        payload: Dict[str, Any] = {}
+        raw = row.get("rawData") if isinstance(row, dict) else row["rawData"]
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                payload = {}
+        payload.update({
+            "id": row.get("movideskId") if isinstance(row, dict) else row["movideskId"],
+            "name": row.get("name") if isinstance(row, dict) else row["name"],
+            "businessName": row.get("businessName") if isinstance(row, dict) else row["businessName"],
+            "tradeName": row.get("tradeName") if isinstance(row, dict) else row["tradeName"],
+            "cpfCnpj": row.get("cnpj") if isinstance(row, dict) else row["cnpj"],
+        })
+        companies.append(payload)
+    return companies
+
+
+async def load_jumpserver_snapshot_assets(ttl_seconds: int, allow_stale: bool = False) -> Optional[List[Dict[str, Any]]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "JumpserverAssetSnapshot"')
+        if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
+            return None
+        rows = await conn.fetch(
+            'SELECT "jumpserverId", "name", "hostname", "ipAddress", "nodePath", "platform", "rawData" FROM "JumpserverAssetSnapshot"'
+        )
+    assets: List[Dict[str, Any]] = []
+    for row in rows:
+        payload: Dict[str, Any] = {}
+        raw = row.get("rawData") if isinstance(row, dict) else row["rawData"]
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                payload = {}
+        node_path = row.get("nodePath") if isinstance(row, dict) else row["nodePath"]
+        nodes_display = []
+        if node_path:
+            if isinstance(node_path, str) and "," in node_path:
+                nodes_display = [n.strip() for n in node_path.split(",") if n.strip()]
+            else:
+                nodes_display = [str(node_path)]
+        payload.update({
+            "id": row.get("jumpserverId") if isinstance(row, dict) else row["jumpserverId"],
+            "name": row.get("name") if isinstance(row, dict) else row["name"],
+            "hostname": row.get("hostname") if isinstance(row, dict) else row["hostname"],
+            "ip": row.get("ipAddress") if isinstance(row, dict) else row["ipAddress"],
+            "nodes_display": nodes_display,
+            "platform": row.get("platform") if isinstance(row, dict) else row["platform"],
+        })
+        assets.append(payload)
+    return assets
+
+
+async def load_netbox_snapshot_tenants(group_filter: str, ttl_seconds: int, allow_stale: bool = False) -> Optional[List[Dict[str, Any]]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "NetboxTenantSnapshot"')
+        if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
+            return None
+        query = 'SELECT "netboxId", "name", "groupName", "erpId", "cnpj", "rawData" FROM "NetboxTenantSnapshot"'
+        params: List[Any] = []
+        if group_filter:
+            query += ' WHERE LOWER("groupName") = LOWER($1)'
+            params.append(group_filter)
+        rows = await conn.fetch(query, *params)
+    tenants: List[Dict[str, Any]] = []
+    for row in rows:
+        payload: Dict[str, Any] = {}
+        raw = row.get("rawData") if isinstance(row, dict) else row["rawData"]
+        if raw:
+            try:
+                payload = json.loads(raw)
+            except Exception:
+                payload = {}
+        custom_fields = payload.get("custom_fields") or {}
+        if row.get("erpId") if isinstance(row, dict) else row["erpId"]:
+            custom_fields.setdefault("ERP_ID", row.get("erpId") if isinstance(row, dict) else row["erpId"])
+        if row.get("cnpj") if isinstance(row, dict) else row["cnpj"]:
+            custom_fields.setdefault("CNPJ", row.get("cnpj") if isinstance(row, dict) else row["cnpj"])
+        tenants.append({
+            "id": row.get("netboxId") if isinstance(row, dict) else row["netboxId"],
+            "name": row.get("name") if isinstance(row, dict) else row["name"],
+            "custom_fields": custom_fields,
+            "group": {"name": row.get("groupName") if isinstance(row, dict) else row["groupName"]} if (row.get("groupName") if isinstance(row, dict) else row["groupName"]) else None,
+        })
+    return tenants
 
 
 async def upsert_movidesk_companies(companies: Iterable[Dict[str, Any]]) -> None:

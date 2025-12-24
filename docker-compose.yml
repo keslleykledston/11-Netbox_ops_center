@@ -122,6 +122,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-change_me}
       REDIS_URL: redis://redis:6379
       ENABLE_QUEUE_EVENTS: "false"
+      SNMP_SERVER_URL: ${SNMP_SERVER_URL:-http://backend:3001}
     volumes:
       - .:/app
       - oxidized_config:/host-oxidized

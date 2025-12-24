@@ -6,11 +6,15 @@ from typing import List, Dict, Any
 from backend.services.movidesk_service import movidesk_svc
 from backend.services.netbox_service import netbox_svc
 from backend.services.jumpserver_service import jumpserver_svc
+from backend.core.config import settings
 from backend.services.snapshot_store import (
     upsert_movidesk_companies,
     upsert_jumpserver_assets,
     upsert_sync_actions,
     update_sync_action_status,
+    load_movidesk_snapshot_companies,
+    load_jumpserver_snapshot_assets,
+    load_netbox_snapshot_tenants,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,24 +76,49 @@ class SyncService:
                 return True
         return False
 
+    def _tenant_name(self, tenant: Any) -> Optional[str]:
+        if isinstance(tenant, dict):
+            return tenant.get("name")
+        return getattr(tenant, "name", None)
+
+    def _tenant_id(self, tenant: Any) -> Optional[Any]:
+        if isinstance(tenant, dict):
+            return tenant.get("id")
+        return getattr(tenant, "id", None)
+
+    def _tenant_custom_fields(self, tenant: Any) -> Dict[str, Any]:
+        if isinstance(tenant, dict):
+            return tenant.get("custom_fields") or {}
+        return getattr(tenant, "custom_fields", {}) or {}
+
     async def generate_sync_report(self, store_pending: bool = True) -> List[Dict[str, Any]]:
         """
         Compare systems and generate a report of pending actions.
         """
         try:
-            movidesk_companies = await movidesk_svc.get_active_companies()
-            try:
-                await upsert_movidesk_companies(movidesk_companies)
-            except Exception as e:
-                logger.warning(f"Falha ao persistir Movidesk localmente: {e}")
+            snapshot_ttl = settings.HUB_SNAPSHOT_TTL or settings.CACHE_TTL
+            allow_stale = settings.HUB_SNAPSHOT_ALLOW_STALE
 
-            js_assets = await jumpserver_svc.get_assets()
-            try:
-                await upsert_jumpserver_assets(js_assets)
-            except Exception as e:
-                logger.warning(f"Falha ao persistir JumpServer localmente: {e}")
+            movidesk_companies = await load_movidesk_snapshot_companies(snapshot_ttl, allow_stale=allow_stale)
+            if movidesk_companies is None:
+                movidesk_companies = await movidesk_svc.get_active_companies()
+                try:
+                    await upsert_movidesk_companies(movidesk_companies)
+                except Exception as e:
+                    logger.warning(f"Falha ao persistir Movidesk localmente: {e}")
+
+            js_assets = await load_jumpserver_snapshot_assets(snapshot_ttl, allow_stale=allow_stale)
+            if js_assets is None:
+                js_assets = await jumpserver_svc.get_assets()
+                try:
+                    await upsert_jumpserver_assets(js_assets)
+                except Exception as e:
+                    logger.warning(f"Falha ao persistir JumpServer localmente: {e}")
+
             # User requirement: Only tenants from 'K3G Solutions' group
-            netbox_tenants = await netbox_svc.get_tenants(**{"group-name": "K3G Solutions"})
+            netbox_tenants = await load_netbox_snapshot_tenants("K3G Solutions", snapshot_ttl, allow_stale=allow_stale)
+            if netbox_tenants is None:
+                netbox_tenants = await netbox_svc.get_tenants(**{"group-name": "K3G Solutions"})
             
             # Mapping Netbox tenants
             nb_by_movidesk_id = {}
@@ -97,16 +126,18 @@ class SyncService:
             nb_by_name = {} # Fallback: normalized name
             
             for t in netbox_tenants:
-                cf = getattr(t, 'custom_fields', {}) or {}
+                cf = self._tenant_custom_fields(t)
                 # Support both new 'ERP_ID' and old 'movidesk_id' during transition
                 m_id = str(cf.get('ERP_ID') or cf.get('erp_id') or cf.get('movidesk_id') or "")
                 cnpj = str(cf.get('CNPJ') or cf.get('cnpj') or "")
-                
+
                 if m_id: nb_by_movidesk_id[m_id] = t
                 if cnpj: nb_by_cnpj[cnpj] = t
-                
+
                 # Store by name for fallback lookup (normalized)
-                nb_by_name[t.name.upper().strip()] = t
+                tenant_name = self._tenant_name(t)
+                if tenant_name:
+                    nb_by_name[tenant_name.upper().strip()] = t
  
             # Clear previous pending for fresh report
             if store_pending:
@@ -155,7 +186,7 @@ class SyncService:
                 
                 elif fallback_match and not matching_tenant:
                     # CASE 2: NAME MATCHES BUT NO ID LINKED
-                    preferred_name = fallback_match.name
+                    preferred_name = self._tenant_name(fallback_match) or name
                     node_paths = [f"/DEFAULT/PRODUÇÃO/{preferred_name}"]
                     if preferred_name != name:
                         node_paths.append(f"/DEFAULT/PRODUÇÃO/{name}")
@@ -166,12 +197,12 @@ class SyncService:
                             break
                     
                     action_id = str(uuid.uuid4())
-                    obs_list = [f"Aviso: Encontrado '{fallback_match.name}' no NetBox via nome."]
-                    
-                    if fallback_match.name != name and self._names_equivalent(fallback_match.name, name):
+                    obs_list = [f"Aviso: Encontrado '{preferred_name}' no NetBox via nome."]
+
+                    if preferred_name != name and self._names_equivalent(preferred_name, name):
                         obs_list.append(f"Nome alternativo no Movidesk: '{name}'.")
-                    elif fallback_match.name != name:
-                        obs_list.append(f"Divergência de nome: '{fallback_match.name}' vs '{name}'.")
+                    elif preferred_name != name:
+                        obs_list.append(f"Divergência de nome: '{preferred_name}' vs '{name}'.")
                     
                     obs_list.append("Sem vínculo com Movidesk ID.")
                     
@@ -182,9 +213,9 @@ class SyncService:
                         "id": action_id,
                         "status": "pending_update",
                         "type": "update_client",
-                        "netbox_id": fallback_match.id,
+                        "netbox_id": self._tenant_id(fallback_match),
                         "client_name": preferred_name,
-                        "old_name": fallback_match.name,
+                        "old_name": preferred_name,
                         "cnpj": cnpj or "N/A",
                         "movidesk_id": m_id,
                         "systems": ["NetBox"],
@@ -199,8 +230,9 @@ class SyncService:
 
                 else:
                     # CASE 3: MATCHED BY ID/CNPJ (FULLY IDENTIFIED)
-                    equivalent_name = self._name_in_candidates(matching_tenant.name, name_candidates)
-                    preferred_name = matching_tenant.name if equivalent_name else name
+                    tenant_name = self._tenant_name(matching_tenant) or name
+                    equivalent_name = self._name_in_candidates(tenant_name, name_candidates)
+                    preferred_name = tenant_name if equivalent_name else name
                     node_paths = [f"/DEFAULT/PRODUÇÃO/{preferred_name}"]
                     if preferred_name != name:
                         node_paths.append(f"/DEFAULT/PRODUÇÃO/{name}")
@@ -209,19 +241,19 @@ class SyncService:
                         if await jumpserver_svc.check_node_exists(node_path):
                             js_exists = True
                             break
-                    
-                    name_mismatch = (not equivalent_name) and matching_tenant.name != name
-                    case_only_mismatch = (not equivalent_name) and (matching_tenant.name.upper() == name.upper()) and name_mismatch
+
+                    name_mismatch = (not equivalent_name) and tenant_name != name
+                    case_only_mismatch = (not equivalent_name) and (tenant_name.upper() == name.upper()) and name_mismatch
 
                     if name_mismatch or not js_exists:
                         action_id = str(uuid.uuid4())
                         obs_list = []
-                        
+
                         if name_mismatch:
                             if case_only_mismatch:
-                                obs_list.append(f"Variação de caixa: '{matching_tenant.name}' vs '{name}'.")
+                                obs_list.append(f"Variação de caixa: '{tenant_name}' vs '{name}'.")
                             else:
-                                obs_list.append(f"Divergência de nome: '{matching_tenant.name}' vs '{name}'.")
+                                obs_list.append(f"Divergência de nome: '{tenant_name}' vs '{name}'.")
                         
                         if not js_exists:
                             obs_list.append(f"Node JumpServer ausente em '{node_paths[0]}'.")
@@ -230,9 +262,9 @@ class SyncService:
                             "id": action_id,
                             "status": "pending_update",
                             "type": "update_client",
-                            "netbox_id": matching_tenant.id,
+                            "netbox_id": self._tenant_id(matching_tenant),
                             "client_name": preferred_name,
-                            "old_name": matching_tenant.name,
+                            "old_name": tenant_name,
                             "cnpj": cnpj or "N/A",
                             "movidesk_id": m_id,
                             "systems": ["NetBox"] if name_mismatch else [],

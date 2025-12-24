@@ -75,7 +75,7 @@ async def load_jumpserver_snapshot_assets(ttl_seconds: int) -> Optional[List[Dic
         return None
     async with pool.acquire() as conn:
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "JumpserverAssetSnapshot"')
-        if not _is_snapshot_fresh(last_seen, ttl_seconds):
+        if not _is_snapshot_fresh(last_seen, ttl_seconds) and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
         rows = await conn.fetch(
             'SELECT "jumpserverId", "name", "hostname", "ipAddress", "nodePath" FROM "JumpserverAssetSnapshot"'
@@ -115,13 +115,13 @@ async def load_netbox_snapshot_devices(limit: int, group_filter: str, ttl_second
         except Exception:
             metadata = {}
         full_sync_completed = bool(metadata.get("fullSyncCompleted") or metadata.get("fullSync"))
-        if not full_sync_completed:
+        if not full_sync_completed and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
-        if not _is_snapshot_fresh(state["lastSuccessAt"], ttl_seconds):
+        if not _is_snapshot_fresh(state["lastSuccessAt"], ttl_seconds) and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
 
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "NetboxDeviceSnapshot"')
-        if not _is_snapshot_fresh(last_seen, ttl_seconds):
+        if not _is_snapshot_fresh(last_seen, ttl_seconds) and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
 
         query = """

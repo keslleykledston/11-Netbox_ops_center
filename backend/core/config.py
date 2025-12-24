@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     # Cache settings
     CACHE_TTL: int = 300  # 5 minutes
     HUB_SNAPSHOT_TTL: int = 600  # 10 minutes
+    HUB_SNAPSHOT_ALLOW_STALE: bool = os.getenv("HUB_SNAPSHOT_ALLOW_STALE", "true").lower() == "true"
     
     model_config = SettingsConfigDict(
         env_file=(".env", ".env.local"),

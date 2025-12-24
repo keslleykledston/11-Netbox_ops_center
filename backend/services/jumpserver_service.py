@@ -17,6 +17,10 @@ class JumpServerService:
         self._token_type = "Bearer" # N8N flow uses Bearer for JWT
         self._token_expires_at: Optional[float] = None
         self._login_lock = asyncio.Lock()
+        self._nodes_cache: Optional[List[Dict[str, Any]]] = None
+        self._nodes_cache_at: Optional[float] = None
+        self._assets_cache: Optional[List[Dict[str, Any]]] = None
+        self._assets_cache_at: Optional[float] = None
 
     def _normalize_path(self, path: str) -> str:
         """Normalize JumpServer paths to avoid false negatives (extra slashes/spaces)."""
@@ -59,6 +63,12 @@ class JumpServerService:
         if not self._token_expires_at:
             return True
         return time.time() < (self._token_expires_at - 30)
+
+    def _cache_is_fresh(self, ts: Optional[float]) -> bool:
+        if not ts:
+            return False
+        ttl = getattr(settings, "CACHE_TTL", 300) or 300
+        return (time.time() - ts) <= ttl
 
     async def _wait_for_token_ready(self) -> None:
         await asyncio.sleep(random.uniform(3.0, 5.0))
@@ -108,15 +118,19 @@ class JumpServerService:
                     return None
 
     async def get_headers(self) -> Dict[str, str]:
-        # If we have a static token, use it. Otherwise, use cached or login.
-        token = settings.JUMPSERVER_TOKEN or None
+        # Prefer login token when credentials are available to avoid stale static tokens.
+        token = None
 
-        if not token:
-            if not self._token_is_valid() and settings.JUMPSERVER_USERNAME and settings.JUMPSERVER_PASSWORD:
-                token = await self.login()
-            else:
+        if settings.JUMPSERVER_USERNAME and settings.JUMPSERVER_PASSWORD:
+            if self._token_is_valid():
                 token = self._cached_token
-        
+            else:
+                token = await self.login()
+            if not token and settings.JUMPSERVER_TOKEN:
+                token = settings.JUMPSERVER_TOKEN
+        else:
+            token = settings.JUMPSERVER_TOKEN or self._cached_token
+
         # Base headers
         headers = {
             "Content-Type": "application/json",
@@ -135,6 +149,9 @@ class JumpServerService:
     async def get_assets(self) -> List[Dict[str, Any]]:
         if not self.base_url:
             return []
+
+        if self._assets_cache is not None and self._cache_is_fresh(self._assets_cache_at):
+            return self._assets_cache
         
         headers = await self.get_headers()
         async with httpx.AsyncClient(follow_redirects=True) as client:
@@ -150,15 +167,22 @@ class JumpServerService:
                 response.raise_for_status()
                 data = response.json()
                 if isinstance(data, list):
+                    self._assets_cache = data
+                    self._assets_cache_at = time.time()
                     return data
-                return data.get("results", [])
+                results = data.get("results", [])
+                self._assets_cache = results
+                self._assets_cache_at = time.time()
+                return results
             except Exception as e:
                 logger.error(f"Failed to fetch assets from JumpServer: {e}")
-                return []
+                return self._assets_cache or []
 
     async def get_nodes(self) -> List[Dict[str, Any]]:
         if not self.base_url:
             return []
+        if self._nodes_cache is not None and self._cache_is_fresh(self._nodes_cache_at):
+            return self._nodes_cache
         headers = await self.get_headers()
         async with httpx.AsyncClient(follow_redirects=True) as client:
             endpoint = f"{self.base_url}/api/v1/assets/nodes/"
@@ -204,12 +228,14 @@ class JumpServerService:
                     params = None  # the 'next' URL already contains paging info
 
                 logger.info(f"Loaded {len(nodes)} nodes from JumpServer")
+                self._nodes_cache = nodes
+                self._nodes_cache_at = time.time()
                 return nodes
             except Exception as e:
                 logger.error(f"Failed to fetch nodes: {e}")
                 if hasattr(e, 'response'):
                     logger.error(f"Response body: {e.response.text if hasattr(e.response, 'text') else 'N/A'}")
-                return []
+                return self._nodes_cache or []
 
     async def update_node(
         self,

@@ -350,6 +350,10 @@ start_services() {
 
 run_migrations() {
     log "Applying database migrations..."
+    if ! wait_for_db; then
+        warn "Postgres not ready. Skipping migrations for now."
+        return
+    fi
     local attempt=1
     local max_attempts=5
     while [ $attempt -le $max_attempts ]; do
@@ -362,6 +366,22 @@ run_migrations() {
         sleep 3
     done
     warn "Failed to apply migrations automatically. Run 'npm --prefix server run db:migrate' inside the backend container."
+}
+
+wait_for_db() {
+    log "Waiting for Postgres to be ready..."
+    local attempt=1
+    local max_attempts=20
+    while [ $attempt -le $max_attempts ]; do
+        if run_compose exec -T db pg_isready -U netbox_ops -d netbox_ops >/dev/null 2>&1; then
+            success "Postgres is ready."
+            return 0
+        fi
+        warn "Postgres not ready (${attempt}/${max_attempts}). Retrying in 3s..."
+        attempt=$((attempt + 1))
+        sleep 3
+    done
+    return 1
 }
 
 verify_installation() {

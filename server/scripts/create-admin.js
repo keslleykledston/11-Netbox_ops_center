@@ -24,6 +24,7 @@ async function main() {
       passwordHash: hash,
       role: 'admin',
       isActive: true,
+      mustResetPassword: true,
       tenantId: null,
     },
     create: {
@@ -32,6 +33,7 @@ async function main() {
       passwordHash: hash,
       role: 'admin',
       isActive: true,
+      mustResetPassword: true,
       tenantId: null,
     },
   });

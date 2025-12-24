@@ -177,6 +177,14 @@ bare_install() {
   npm run server:install
   npm run db:migrate
   npm run prisma:generate
+  set -a
+  [ -f .env ] && . .env
+  [ -f .env.local ] && . .env.local
+  set +a
+  ADMIN_EMAIL="${DEFAULT_ADMIN_EMAIL:-suporte@suporte.com.br}" \
+    ADMIN_USERNAME="${DEFAULT_ADMIN_USERNAME:-admin}" \
+    ADMIN_PASSWORD="${DEFAULT_ADMIN_PASSWORD:-Ops_pass_}" \
+    node server/scripts/create-admin.js
 
   log "[+] Starting the stack (web+api+snmp) in background"
   nohup bash -lc "npm run dev:stack" > /var/log/netbox-ops-center.log 2>&1 &

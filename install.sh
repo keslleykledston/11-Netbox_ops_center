@@ -377,6 +377,38 @@ run_prisma_generate() {
     fi
 }
 
+run_default_admin() {
+    log "Ensuring default admin user (password reset required)..."
+    local email="suporte@suporte.com.br"
+    local username="admin"
+    local password="Ops_pass_"
+    if [ -f .env ] || [ -f .env.local ]; then
+        set -a
+        [ -f .env ] && . .env
+        [ -f .env.local ] && . .env.local
+        set +a
+        email="${DEFAULT_ADMIN_EMAIL:-$email}"
+        username="${DEFAULT_ADMIN_USERNAME:-$username}"
+        password="${DEFAULT_ADMIN_PASSWORD:-$password}"
+    fi
+    local attempt=1
+    local max_attempts=5
+    while [ $attempt -le $max_attempts ]; do
+        if run_compose exec -T \
+            -e ADMIN_EMAIL="$email" \
+            -e ADMIN_USERNAME="$username" \
+            -e ADMIN_PASSWORD="$password" \
+            backend node server/scripts/create-admin.js; then
+            success "Default admin ready."
+            return 0
+        fi
+        warn "Default admin setup failed (${attempt}/${max_attempts}). Retrying..."
+        attempt=$((attempt + 1))
+        sleep 3
+    done
+    warn "Default admin setup failed. Run create-admin.js manually."
+}
+
 wait_for_db() {
     log "Waiting for Postgres to be ready..."
     local attempt=1
@@ -448,6 +480,7 @@ main() {
     log "Step 6/6: Applying migrations and verifying installation..."
     run_migrations
     run_prisma_generate
+    run_default_admin
     verify_installation
     
     echo ""

@@ -181,6 +181,7 @@ install_bare_dependencies() {
   run_as_app "cd '$APP_DIR' && npm run server:install"
   run_as_app "cd '$APP_DIR' && npm run db:migrate"
   run_as_app "cd '$APP_DIR' && npm run prisma:generate"
+  run_as_app "cd '$APP_DIR' && [ -f .env ] && . .env || true; [ -f .env.local ] && . .env.local || true; ADMIN_EMAIL=\"\${DEFAULT_ADMIN_EMAIL:-suporte@suporte.com.br}\" ADMIN_USERNAME=\"\${DEFAULT_ADMIN_USERNAME:-admin}\" ADMIN_PASSWORD=\"\${DEFAULT_ADMIN_PASSWORD:-Ops_pass_}\" node server/scripts/create-admin.js"
 }
 
 ensure_oxidized_tree() {

@@ -64,6 +64,7 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
         npm --prefix server run start:api
       "
     expose:
@@ -118,6 +119,7 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
         npm --prefix server run start:worker
       "
     depends_on:
@@ -151,6 +153,7 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
+        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
         npm --prefix server run start:scheduler
       "
     depends_on:

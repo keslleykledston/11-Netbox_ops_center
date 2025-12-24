@@ -5,9 +5,15 @@ import { PrismaClient } from '@prisma/client';
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = process.env.ADMIN_EMAIL || 'keslley.k3g';
-  const username = process.env.ADMIN_USERNAME || 'keslley.k3g';
-  const password = process.env.ADMIN_PASSWORD || '#100784KyK_';
+  const email = process.env.ADMIN_EMAIL
+    || process.env.DEFAULT_ADMIN_EMAIL
+    || 'suporte@suporte.com.br';
+  const username = process.env.ADMIN_USERNAME
+    || process.env.DEFAULT_ADMIN_USERNAME
+    || 'admin';
+  const password = process.env.ADMIN_PASSWORD
+    || process.env.DEFAULT_ADMIN_PASSWORD
+    || 'Ops_pass_';
 
   const hash = await bcrypt.hash(password, 10);
 

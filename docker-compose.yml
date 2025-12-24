@@ -64,7 +64,17 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
-        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
+        npm --prefix server run prisma:generate &&
+        migrate_ok=0;
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          npm --prefix server run db:migrate && migrate_ok=1 && break;
+          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          sleep 3;
+        done;
+        if [ \"$migrate_ok\" -ne 1 ]; then
+          echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
+          exit 1;
+        fi;
         npm --prefix server run start:api
       "
     expose:
@@ -119,7 +129,17 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
-        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
+        npm --prefix server run prisma:generate &&
+        migrate_ok=0;
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          npm --prefix server run db:migrate && migrate_ok=1 && break;
+          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          sleep 3;
+        done;
+        if [ \"$migrate_ok\" -ne 1 ]; then
+          echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
+          exit 1;
+        fi;
         npm --prefix server run start:worker
       "
     depends_on:
@@ -153,7 +173,17 @@ services:
     command: >-
       sh -lc "
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
-        if [ ! -d server/node_modules/.prisma/client ]; then npm --prefix server run prisma:generate; fi &&
+        npm --prefix server run prisma:generate &&
+        migrate_ok=0;
+        for i in 1 2 3 4 5 6 7 8 9 10; do
+          npm --prefix server run db:migrate && migrate_ok=1 && break;
+          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          sleep 3;
+        done;
+        if [ \"$migrate_ok\" -ne 1 ]; then
+          echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
+          exit 1;
+        fi;
         npm --prefix server run start:scheduler
       "
     depends_on:

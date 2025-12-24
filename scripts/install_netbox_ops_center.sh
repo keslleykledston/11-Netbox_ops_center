@@ -176,6 +176,7 @@ bare_install() {
   npm install
   npm run server:install
   npm run db:migrate
+  npm run prisma:generate
 
   log "[+] Starting the stack (web+api+snmp) in background"
   nohup bash -lc "npm run dev:stack" > /var/log/netbox-ops-center.log 2>&1 &

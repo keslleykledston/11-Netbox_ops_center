@@ -180,6 +180,7 @@ install_bare_dependencies() {
   run_as_app "cd '$APP_DIR' && npm install"
   run_as_app "cd '$APP_DIR' && npm run server:install"
   run_as_app "cd '$APP_DIR' && npm run db:migrate"
+  run_as_app "cd '$APP_DIR' && npm run prisma:generate"
 }
 
 ensure_oxidized_tree() {

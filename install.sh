@@ -368,6 +368,15 @@ run_migrations() {
     warn "Failed to apply migrations automatically. Run 'npm --prefix server run db:migrate' inside the backend container."
 }
 
+run_prisma_generate() {
+    log "Generating Prisma client binaries..."
+    if run_compose exec -T backend npm --prefix server run prisma:generate; then
+        success "Prisma client generated."
+    else
+        warn "Failed to generate Prisma client. Run 'npm --prefix server run prisma:generate' inside the backend container."
+    fi
+}
+
 wait_for_db() {
     log "Waiting for Postgres to be ready..."
     local attempt=1
@@ -438,6 +447,7 @@ main() {
     # 6. Verify
     log "Step 6/6: Applying migrations and verifying installation..."
     run_migrations
+    run_prisma_generate
     verify_installation
     
     echo ""

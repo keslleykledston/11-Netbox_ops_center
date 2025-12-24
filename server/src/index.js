@@ -625,8 +625,10 @@ async function ensureDefaultTenant() {
       await prisma.tenant.create({ data: { name: 'default', description: 'Default tenant' } });
       console.log('[BOOT] Created default tenant');
     }
+    return true;
   } catch (e) {
     console.warn('[BOOT][WARN] ensureDefaultTenant failed:', String(e?.message || e));
+    return false;
   }
 }
 
@@ -648,9 +650,26 @@ async function ensureDefaultAdminUser() {
       });
       console.log('[BOOT] Created default admin user');
     }
+    return true;
   } catch (e) {
     console.warn('[BOOT][WARN] ensureDefaultAdminUser failed:', String(e?.message || e));
+    return false;
   }
+}
+
+async function ensureDefaultBootstrap() {
+  const attempts = Math.max(Number(process.env.BOOTSTRAP_RETRY_ATTEMPTS) || 10, 1);
+  const delayMs = Math.max(Number(process.env.BOOTSTRAP_RETRY_DELAY_MS) || 3000, 500);
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const tenantOk = await ensureDefaultTenant();
+    const adminOk = await ensureDefaultAdminUser();
+    if (tenantOk && adminOk) return;
+    if (attempt < attempts) {
+      console.warn(`[BOOT][WARN] Default bootstrap pending (${attempt}/${attempts}). Retrying in ${delayMs}ms.`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  console.warn('[BOOT][WARN] Default bootstrap did not complete.');
 }
 
 async function lookupAsnName(asn) {
@@ -755,8 +774,7 @@ function startNetboxPendingScheduler() {
 }
 
 async function bootstrapBackground() {
-  await ensureDefaultTenant();
-  await ensureDefaultAdminUser();
+  await ensureDefaultBootstrap();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();

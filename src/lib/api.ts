@@ -112,7 +112,7 @@ export const api = {
     const list = await apiFetch("/applications", { method: "GET" });
     return (list as any[]).map((a) => ({ ...a, id: String(a.id), tenantId: String(a.tenantId) }));
   },
-  async createApplication(data: { name: string; url: string; apiKey: string; status?: string; description?: string }) {
+  async createApplication(data: { name: string; url: string; apiKey: string; status?: string; description?: string; username?: string; password?: string; privateKey?: string; config?: any }) {
     const created = await apiFetch("/applications", { method: "POST", body: JSON.stringify(data) });
     const a = created as any;
     return { ...a, id: String(a.id), tenantId: String(a.tenantId) };
@@ -174,8 +174,11 @@ export const api = {
     const params = new URLSearchParams({ status, start: String(start), end: String(end) });
     return apiFetch(`/queues/${queue}/jobs?${params.toString()}`, { method: 'GET' });
   },
-  async jumpserverTest(url?: string, apiKey?: string) {
-    return apiFetch(`/jumpserver/test`, { method: "POST", body: JSON.stringify({ url, apiKey }) });
+  async jumpserverTest(url?: string, apiKey?: string, options?: { username?: string; password?: string; organizationId?: string; storeToken?: boolean; appId?: string | number }) {
+    return apiFetch(`/jumpserver/test`, {
+      method: "POST",
+      body: JSON.stringify({ url, apiKey, ...options }),
+    });
   },
   async jumpserverConnect(deviceId: string | number) {
     return apiFetch(`/jumpserver/connect/${deviceId}`, { method: "POST" });
@@ -342,39 +345,23 @@ export const api = {
     const params = tenantId ? `?tenantId=${tenantId}` : '';
     return apiFetch(`/access/jumpserver/sessions/${sessionId}/replay${params}`, { method: 'GET' });
   },
-  async syncJumpserverDevices(tenantId?: number | string) {
-    return apiFetch(`/access/jumpserver/sync-devices`, {
+  async syncJumpserverDevice(payload: { deviceId?: number | string; netboxId?: number | string; tenantName?: string; deviceName?: string; ipAddress?: string; confirm?: boolean }) {
+    return apiFetch(`/access/jumpserver/sync-device`, {
       method: 'POST',
-      body: JSON.stringify({ tenantId })
+      body: JSON.stringify(payload || {}),
     });
   },
-  async testJumpserverConnection(url: string, apiKey: string, organizationId?: string) {
+  async syncJumpserverTenant(payload: { tenantName?: string; tenantId?: number | string; limit?: number; netboxIds?: Array<number | string>; confirm?: boolean }) {
+    return apiFetch(`/access/jumpserver/sync-tenant`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    });
+  },
+  async testJumpserverConnection(url: string, apiKey: string, organizationId?: string, options?: { username?: string; password?: string; storeToken?: boolean; appId?: string | number }) {
     return apiFetch(`/access/jumpserver/test`, {
       method: 'POST',
-      body: JSON.stringify({ url, apiKey, organizationId })
+      body: JSON.stringify({ url, apiKey, organizationId, ...options })
     });
-  },
-  async jumpserverSyncStart(payload: { mode?: string; filters?: any; tenantId?: number; netboxUrl?: string; netboxToken?: string; threshold?: number; jumpserverUrl?: string; jumpserverApiKey?: string; jumpserverOrgId?: string }) {
-    return apiFetch(`/jumpserver/sync/start`, {
-      method: 'POST',
-      body: JSON.stringify(payload || {}),
-    });
-  },
-  async jumpserverSyncPending(jobId: string, status?: string) {
-    const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-    return apiFetch(`/jumpserver/sync/${jobId}/pending${qs}`, { method: 'GET' });
-  },
-  async jumpserverSyncApprove(actionId: string, payload: { action: 'approve' | 'reject'; tenantId?: number; netboxUrl?: string; netboxToken?: string }) {
-    return apiFetch(`/jumpserver/sync/pending/${actionId}/approve`, {
-      method: 'POST',
-      body: JSON.stringify(payload || {}),
-    });
-  },
-  async jumpserverSyncStatus(jobId: string) {
-    return apiFetch(`/jumpserver/sync/${jobId}/status`, { method: 'GET' });
-  },
-  async jumpserverSyncHistory(limit = 20) {
-    return apiFetch(`/jumpserver/sync/history?limit=${limit}`, { method: 'GET' });
   },
 
   // HUB Backend (FastAPI) Integration

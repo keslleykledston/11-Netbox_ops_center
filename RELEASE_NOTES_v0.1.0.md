@@ -26,16 +26,15 @@ Variáveis de ambiente (principais)
 - .env (raiz)
   - VITE_USE_BACKEND=true, VITE_API_URL=/api
   - API_SERVER_URL=http://localhost:4000, SNMP_SERVER_URL=http://localhost:3001
+  - DATABASE_URL=postgresql://..., PORT=4000
   - NETBOX_TENANT_GROUP_FILTER=K3G Solutions
-- server/.env
-  - DATABASE_URL="file:./dev.db", PORT=4000
+- .env.local (opcional)
   - JWT_SECRET=<defina um valor forte>, CRED_ENCRYPTION_KEY=<chave forte>
-  - (Opcional) NETBOX_URL/NETBOX_TOKEN
+  - (Opcional) overrides de tokens/URLs sensiveis
 
 Instalação (resumo)
-- cp .env.example .env && cp server/.env.example server/.env
+- cp .env.example .env (opcional: crie .env.local para segredos)
 - npm install && npm run server:install && npm run db:push
 - npm run dev:stack  # http://localhost:8080/
 - Criar admin: node server/scripts/create-admin.js
 - Testar SNMP: curl "http://localhost:3001/api/snmp/ping?ip=127.0.0.1&community=public"
-

@@ -1,7 +1,7 @@
 import { ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { cn } from "@/lib/utils";
-import { Network, LayoutDashboard, Server, Settings, GitBranch, FileJson, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal, Layers, Globe, Database } from "lucide-react";
+import { Network, LayoutDashboard, Server, Settings, GitBranch, LogOut, Wrench, Users as UsersIcon, HardDrive, Terminal, Layers, Globe, Database } from "lucide-react";
 import { getToken } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import IdleSessionManager from "@/components/session/IdleSessionManager";
@@ -35,7 +35,6 @@ const DashboardLayout = ({ children }: DashboardLayoutProps) => {
     { name: "Backup", href: "/backup", icon: HardDrive },
     { name: "Oxidized Proxies", href: "/oxidized-proxies", icon: Layers },
     { name: "Aplicações", href: "/applications", icon: Settings },
-    { name: "Sync JumpServer", href: "/jumpserver-sync", icon: FileJson },
     { name: "Manutenção", href: "/maintenance", icon: Wrench },
     ...(resolvedIsAdmin ? [{ name: "Usuários", href: "/users", icon: UsersIcon }] : [{ name: "Usuário", href: "/me", icon: UsersIcon }]),
   ];

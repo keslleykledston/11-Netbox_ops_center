@@ -29,7 +29,7 @@ Este é o motor de processamento assíncrono para o Netbox Ops Center.
 
 ## Configuração
 
-O backend lê as configurações do arquivo `.env` na raiz do projeto. Certifique-se de que as seguintes variáveis estejam configuradas:
+O backend lê as configurações do arquivo `.env` na raiz do projeto (com suporte a `.env.local` para sobrescritas). Certifique-se de que as seguintes variáveis estejam configuradas:
 
 ```env
 NETBOX_URL=...

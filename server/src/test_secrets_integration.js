@@ -1,12 +1,6 @@
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import "./env.js";
 import { getSessionKey } from './netboxClient.js';
 import { getDeviceSecrets } from './netboxSecrets.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const envPath = path.resolve(__dirname, '../.env');
-dotenv.config({ path: envPath });
 
 const NETBOX_URL = process.env.VITE_NETBOX_API_URL || process.env.NETBOX_URL;
 const NETBOX_TOKEN = process.env.VITE_NETBOX_API_TOKEN || process.env.NETBOX_TOKEN;

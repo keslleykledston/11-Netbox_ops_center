@@ -19,6 +19,7 @@ server*.log
 
 # Environment & Secrets
 .env
+.env.local
 server/.env
 *.pem
 *.key

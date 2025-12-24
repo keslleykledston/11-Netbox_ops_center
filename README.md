@@ -89,7 +89,6 @@ O NetBox Ops Center inclui integração completa com LibreNMS para monitoramento
 
 3. **Configure o backend**:
    ```bash
-   cd server
    nano .env
    ```
    Adicione:
@@ -239,7 +238,7 @@ node debug/check_db.js          # Ver contadores do banco
 
 ### Variáveis de Ambiente
 
-Veja `.env.example` para lista completa. Principais:
+Veja `.env.example` para lista completa. Use `.env.local` para sobrescritas locais. Principais:
 
 - `NETBOX_URL` / `NETBOX_TOKEN`: Credenciais do NetBox
 - `NETBOX_TENANT_GROUP_FILTER`: Grupo de tenants a sincronizar

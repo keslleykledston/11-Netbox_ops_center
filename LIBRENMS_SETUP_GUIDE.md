@@ -136,10 +136,9 @@ Para permitir que o NetBox Ops Center sincronize dispositivos automaticamente co
 
 ### 3. Configurar no NetBox Ops Center
 
-Edite o arquivo `.env` do backend:
+Edite o arquivo `.env` na raiz do projeto (ou `.env.local` para sobrescritas):
 
 ```bash
-cd server
 nano .env
 ```
 

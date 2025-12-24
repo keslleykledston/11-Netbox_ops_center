@@ -138,9 +138,9 @@ main() {
   check_docker
   check_structure
 
-  # Load envs (root and server)
+  # Load envs (root + local overrides)
   load_env ".env"
-  load_env "server/.env"
+  load_env ".env.local"
 
   # Show relevant envs
   info "VITE_API_URL=${VITE_API_URL:-/api}"
@@ -161,4 +161,3 @@ main() {
 }
 
 main "$@"
-

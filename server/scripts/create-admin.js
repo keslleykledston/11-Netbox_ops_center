@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../src/env.js';
 import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 
@@ -41,4 +41,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-

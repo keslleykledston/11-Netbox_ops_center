@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { AlertCircle, CheckCircle2, RefreshCw, Search } from "lucide-react";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -22,6 +23,106 @@ const OperationalHubPanel = ({ showHeader = true }: OperationalHubPanelProps) =>
   const [executingSync, setExecutingSync] = useState(false);
   const [showAllSync, setShowAllSync] = useState(false);
   const [selectedSync, setSelectedSync] = useState<string[]>([]);
+  const [syncingDevices, setSyncingDevices] = useState<Record<string, boolean>>({});
+  const [importedDevices, setImportedDevices] = useState<Record<string, boolean>>({});
+  const [syncPendencies, setSyncPendencies] = useState<any[]>([]);
+  const [tenantFilter, setTenantFilter] = useState<string[]>([]);
+  const [deviceSearch, setDeviceSearch] = useState("");
+  const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
+  const [batchSyncing, setBatchSyncing] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ total: 0, completed: 0 });
+  const [showTenantDropdown, setShowTenantDropdown] = useState(false);
+  const tenantDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  const missingDevices = Array.isArray(auditData?.missing_devices) ? auditData.missing_devices : [];
+  const tenantOptions = Array.from(new Set(missingDevices.map((d: any) => d?.tenant).filter(Boolean))).sort();
+  const tenantTargetCount = tenantFilter.length > 0
+    ? missingDevices.filter((d: any) => tenantFilter.includes(d?.tenant)).length
+    : 0;
+
+  const normalizeText = (value: any) => String(value || "").toLowerCase();
+  const filteredDevices = missingDevices.filter((device: any) => {
+    const matchesTenant = tenantFilter.length === 0 || tenantFilter.includes(device?.tenant);
+    const search = normalizeText(deviceSearch);
+    const matchesSearch = !search
+      || normalizeText(device?.name).includes(search)
+      || normalizeText(device?.ip).includes(search);
+    return matchesTenant && matchesSearch;
+  });
+
+  const selectedFilteredCount = filteredDevices.filter((d: any) => selectedDevices.includes(String(d.id))).length;
+
+  const allFilteredSelected = filteredDevices.length > 0 && filteredDevices.every((d: any) => selectedDevices.includes(String(d.id)));
+
+  const toggleDeviceSelection = (deviceId: any) => {
+    const key = String(deviceId);
+    setSelectedDevices((prev) => (prev.includes(key) ? prev.filter((id) => id !== key) : [...prev, key]));
+  };
+
+  const toggleSelectAllFiltered = (checked: boolean) => {
+    if (!checked) {
+      const filteredIds = new Set(filteredDevices.map((d: any) => String(d.id)));
+      setSelectedDevices((prev) => prev.filter((id) => !filteredIds.has(id)));
+      return;
+    }
+    const filteredIds = filteredDevices.map((d: any) => String(d.id));
+    setSelectedDevices((prev) => Array.from(new Set([...prev, ...filteredIds])));
+  };
+
+  const toggleTenantFilter = (tenantName: string) => {
+    setTenantFilter((prev) => (prev.includes(tenantName) ? prev.filter((t) => t !== tenantName) : [...prev, tenantName]));
+  };
+
+  const selectAllTenants = () => {
+    setTenantFilter(tenantOptions);
+  };
+
+  const clearTenantFilter = () => {
+    setTenantFilter([]);
+  };
+
+  const recordPendency = (device: any, reason: string) => {
+    const key = String(device?.id || device?.name || "unknown");
+    const entry = {
+      key,
+      name: device?.name || "N/A",
+      ip: device?.ip || device?.ipAddress || "N/A",
+      site: device?.site || "N/A",
+      tenant: device?.tenant || "N/A",
+      reason,
+      updatedAt: new Date().toISOString(),
+    };
+    setSyncPendencies((prev) => {
+      const idx = prev.findIndex((item) => item.key === key);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = entry;
+        return next;
+      }
+      return [entry, ...prev];
+    });
+  };
+
+  const clearPendency = (device: any) => {
+    const key = String(device?.id || device?.name || "unknown");
+    setSyncPendencies((prev) => prev.filter((item) => item.key !== key));
+  };
+
+  const removeDeviceFromAudit = (deviceId: any) => {
+    const key = String(deviceId);
+    setAuditData((prev: any) => {
+      if (!prev?.missing_devices) return prev;
+      const nextMissing = prev.missing_devices.filter((d: any) => String(d.id) !== key);
+      if (nextMissing.length === prev.missing_devices.length) return prev;
+      const summary = prev.summary
+        ? { ...prev.summary, missing_count: nextMissing.length }
+        : prev.summary;
+      return { ...prev, missing_devices: nextMissing, summary };
+    });
+    setSelectedDevices((prev) => prev.filter((id) => id !== key));
+  };
+
+  const clearAllPendencies = () => setSyncPendencies([]);
 
   const fetchAudit = async () => {
     setLoadingAudit(true);
@@ -75,9 +176,151 @@ const OperationalHubPanel = ({ showHeader = true }: OperationalHubPanelProps) =>
     setSelectedSync((prev) => (prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]));
   };
 
+  const syncDeviceInternal = async (device: any) => {
+    if (!device?.id) return { ok: false };
+    setSyncingDevices((prev) => ({ ...prev, [device.id]: true }));
+    try {
+      const res = await api.syncJumpserverDevice({
+        netboxId: device.id,
+        tenantName: device.tenant,
+        deviceName: device.name,
+        ipAddress: device.ip,
+        confirm: true,
+      });
+      if (res?.netbox?.ok === false && res?.netbox?.error) {
+        recordPendency(device, `NetBox: ${res?.netbox?.error || "erro desconhecido"}`);
+        toast.warning(`Jumpserver OK, NetBox falhou: ${res?.netbox?.error || "erro desconhecido"}`);
+      } else {
+        clearPendency(device);
+        toast.success(`Dispositivo ${device.name} sincronizado no Jumpserver.`);
+      }
+      if (res?.ok) {
+        removeDeviceFromAudit(device.id);
+      }
+      if (res?.importedFromNetbox) {
+        setImportedDevices((prev) => ({ ...prev, [device.id]: true }));
+      }
+      return { ok: true, res };
+    } catch (error: any) {
+      recordPendency(device, error.message || "Falha desconhecida");
+      toast.error("Falha ao sincronizar: " + error.message);
+      return { ok: false, error };
+    } finally {
+      setSyncingDevices((prev) => ({ ...prev, [device.id]: false }));
+    }
+  };
+
+  const handleSyncDevice = async (device: any) => {
+    if (!device?.id) return;
+    const confirmed = window.confirm(`Sincronizar o dispositivo '${device.name}' no Jumpserver e NetBox?`);
+    if (!confirmed) return;
+    await syncDeviceInternal(device);
+  };
+
+  const handleBulkSync = async () => {
+    if (selectedFilteredCount === 0 || batchSyncing) return;
+    const targets = filteredDevices.filter((d: any) => selectedDevices.includes(String(d.id)));
+    if (targets.length === 0) return;
+    const confirmed = window.confirm(`Sincronizar ${targets.length} dispositivo(s) selecionado(s)?`);
+    if (!confirmed) return;
+    setBatchSyncing(true);
+    setBatchProgress({ total: targets.length, completed: 0 });
+    for (const device of targets) {
+      await syncDeviceInternal(device);
+      setBatchProgress((prev) => ({ total: prev.total, completed: prev.completed + 1 }));
+    }
+    setBatchSyncing(false);
+    setBatchProgress({ total: 0, completed: 0 });
+  };
+
+  const handleTenantBulkSync = async () => {
+    if (batchSyncing) return;
+    const tenants = tenantFilter.length > 0 ? tenantFilter : [];
+    if (tenants.length === 0) {
+      toast.info("Selecione ao menos um cliente para sincronizar.");
+      return;
+    }
+    const targets = missingDevices.filter((device: any) => tenants.includes(device?.tenant));
+    if (targets.length === 0) {
+      toast.info("Nenhum dispositivo pendente para os clientes selecionados.");
+      return;
+    }
+    const confirmed = window.confirm(`Sincronizar ${targets.length} dispositivo(s) do(s) cliente(s) selecionado(s)?`);
+    if (!confirmed) return;
+    setBatchSyncing(true);
+    setBatchProgress({ total: targets.length, completed: 0 });
+
+    const deviceById = new Map<string, any>();
+    const deviceByName = new Map<string, any>();
+    targets.forEach((device: any) => {
+      deviceById.set(String(device.id), device);
+      if (device?.name) deviceByName.set(String(device.name), device);
+    });
+
+    const incrementProgress = (count: number = 1) => {
+      setBatchProgress((prev) => ({ total: prev.total, completed: prev.completed + count }));
+    };
+
+    for (const tenant of tenants) {
+      const tenantTargets = targets.filter((device: any) => device?.tenant === tenant);
+      if (tenantTargets.length === 0) continue;
+      const netboxIds = tenantTargets.map((device: any) => device.id);
+      try {
+        const res = await api.syncJumpserverTenant({
+          tenantName: tenant,
+          netboxIds,
+          confirm: true,
+        });
+        const results = Array.isArray(res?.results) ? res.results : [];
+        if (results.length === 0) {
+          tenantTargets.forEach((device: any) => {
+            recordPendency(device, "Falha ao sincronizar em lote para o tenant.");
+            incrementProgress();
+          });
+          continue;
+        }
+        for (const result of results) {
+          const resultId = result?.netboxId ?? result?.deviceId;
+          const device = resultId != null
+            ? deviceById.get(String(resultId)) || deviceByName.get(String(result?.name))
+            : deviceByName.get(String(result?.name));
+          if (result?.status === "success") {
+            if (device) clearPendency(device);
+            const removalId = resultId != null ? resultId : device?.id;
+            if (removalId != null) removeDeviceFromAudit(removalId);
+          } else {
+            recordPendency(device || { id: resultId, name: result?.name, tenant }, result?.error || "Falha desconhecida");
+          }
+          incrementProgress();
+        }
+      } catch (error: any) {
+        tenantTargets.forEach((device: any) => {
+          recordPendency(device, error?.message || "Falha ao sincronizar tenant.");
+          incrementProgress();
+        });
+        toast.error(`Falha ao sincronizar tenant ${tenant}: ${error?.message || "erro desconhecido"}`);
+      }
+    }
+
+    setBatchSyncing(false);
+    setBatchProgress({ total: 0, completed: 0 });
+  };
+
   useEffect(() => {
     fetchAudit();
   }, []);
+
+  useEffect(() => {
+    if (!showTenantDropdown) return;
+    const handleClick = (event: MouseEvent) => {
+      if (!tenantDropdownRef.current) return;
+      if (!tenantDropdownRef.current.contains(event.target as Node)) {
+        setShowTenantDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showTenantDropdown]);
 
   return (
     <div className="space-y-6">
@@ -155,32 +398,147 @@ const OperationalHubPanel = ({ showHeader = true }: OperationalHubPanelProps) =>
                   Dispositivos documentados no Netbox mas ausentes no JumpServer.
                 </CardDescription>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchAudit}
-                disabled={loadingAudit}
-                className="gap-2"
-              >
-                <RefreshCw className={`h-4 w-4 ${loadingAudit ? "animate-spin" : ""}`} />
-                Atualizar
-              </Button>
+              <div className="flex items-center gap-2">
+                {tenantTargetCount > 0 && (
+                  <Button size="sm" variant="secondary" onClick={handleTenantBulkSync} disabled={batchSyncing}>
+                    {batchSyncing ? "Sincronizando..." : `Sincronizar cliente (${tenantTargetCount})`}
+                  </Button>
+                )}
+                {selectedFilteredCount > 0 && (
+                  <Button size="sm" onClick={handleBulkSync} disabled={batchSyncing}>
+                    {batchSyncing ? "Sincronizando..." : `Sincronizar (${selectedFilteredCount})`}
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchAudit}
+                  disabled={loadingAudit}
+                  className="gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${loadingAudit ? "animate-spin" : ""}`} />
+                  Atualizar
+                </Button>
+              </div>
             </CardHeader>
             <CardContent>
-              {auditData?.missing_devices?.length > 0 ? (
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Clientes:</span>
+                  <div className="relative" ref={tenantDropdownRef}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowTenantDropdown((prev) => !prev)}
+                      className="gap-2"
+                    >
+                      {tenantFilter.length > 0 ? `Clientes (${tenantFilter.length})` : "Todos os clientes"}
+                    </Button>
+                    {showTenantDropdown && (
+                      <div className="absolute z-10 mt-2 w-64 rounded-md border bg-background p-2 shadow-md">
+                        <div className="mb-2 flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={selectAllTenants}
+                            disabled={tenantOptions.length === 0}
+                          >
+                            Todos
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={clearTenantFilter}
+                            disabled={tenantFilter.length === 0}
+                          >
+                            Limpar
+                          </Button>
+                        </div>
+                        <div className="max-h-48 space-y-1 overflow-auto">
+                          {tenantOptions.length > 0 ? (
+                            tenantOptions.map((tenant) => (
+                              <label key={tenant} className="flex items-center gap-2 text-xs">
+                                <Checkbox
+                                  checked={tenantFilter.includes(tenant)}
+                                  onCheckedChange={() => toggleTenantFilter(tenant)}
+                                />
+                                {tenant}
+                              </label>
+                            ))
+                          ) : (
+                            <span className="text-xs text-muted-foreground">Nenhum cliente encontrado</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Buscar:</span>
+                  <Input
+                    value={deviceSearch}
+                    onChange={(e) => setDeviceSearch(e.target.value)}
+                    placeholder="Nome ou IP"
+                    className="h-8 w-48"
+                  />
+                </div>
+              </div>
+              {batchProgress.total > 0 && (
+                <div className="mb-3">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground">
+                    <span>Sincronizando {batchProgress.completed}/{batchProgress.total}</span>
+                    <span>{Math.round((batchProgress.completed / Math.max(batchProgress.total, 1)) * 100)}%</span>
+                  </div>
+                  <div className="mt-1 h-1 w-full rounded bg-muted">
+                    <div
+                      className="h-1 rounded bg-emerald-500 transition-all"
+                      style={{ width: `${Math.round((batchProgress.completed / Math.max(batchProgress.total, 1)) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+              {syncPendencies.length > 0 && (
+                <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                  <AlertCircle className="h-4 w-4" />
+                  Pendencias apos a sincronizacao: {syncPendencies.length}. Veja a lista abaixo.
+                </div>
+              )}
+              {filteredDevices.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
+                      <TableHead className="w-[40px]">
+                        <Checkbox
+                          checked={allFilteredSelected}
+                          onCheckedChange={(checked) => toggleSelectAllFiltered(!!checked)}
+                        />
+                      </TableHead>
                       <TableHead>Nome</TableHead>
                       <TableHead>IP Primary</TableHead>
                       <TableHead>Site</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Ações</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {auditData?.missing_devices?.map((device: any) => (
+                    {filteredDevices.map((device: any) => (
                       <TableRow key={device.id}>
-                        <TableCell className="font-medium text-xs lg:text-sm">{device.name}</TableCell>
+                        <TableCell>
+                          <Checkbox
+                            checked={selectedDevices.includes(String(device.id))}
+                            onCheckedChange={() => toggleDeviceSelection(device.id)}
+                          />
+                        </TableCell>
+                        <TableCell className="font-medium text-xs lg:text-sm">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span>{device.name}</span>
+                            {importedDevices[device.id] && (
+                              <Badge variant="outline" className="text-[10px]">
+                                Importado do NetBox
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-xs lg:text-sm">{device.ip}</TableCell>
                         <TableCell className="text-xs lg:text-sm">{device.site}</TableCell>
                         <TableCell>
@@ -188,10 +546,35 @@ const OperationalHubPanel = ({ showHeader = true }: OperationalHubPanelProps) =>
                             Missing JS
                           </Badge>
                         </TableCell>
+                        <TableCell>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleSyncDevice(device)}
+                            disabled={!!syncingDevices[device.id]}
+                          >
+                            {syncingDevices[device.id] ? (
+                              <span className="flex items-center gap-2">
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                Sincronizando...
+                              </span>
+                            ) : (
+                              "Sincronizar"
+                            )}
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
+              ) : missingDevices.length > 0 ? (
+                <div className="flex flex-col items-center justify-center py-8 text-center">
+                  <AlertCircle className="h-10 w-10 text-muted-foreground mb-3" />
+                  <h3 className="text-lg font-semibold">Nenhum resultado</h3>
+                  <p className="text-muted-foreground">
+                    Ajuste o filtro de clientes ou a busca para encontrar dispositivos.
+                  </p>
+                </div>
               ) : (
                 <div className="flex flex-col items-center justify-center py-8 text-center">
                   <CheckCircle2 className="h-12 w-12 text-green-500 mb-4" />
@@ -203,6 +586,46 @@ const OperationalHubPanel = ({ showHeader = true }: OperationalHubPanelProps) =>
               )}
             </CardContent>
           </Card>
+
+          {syncPendencies.length > 0 && (
+            <Card className="mt-4">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div>
+                  <CardTitle>Pendencias apos a sincronia</CardTitle>
+                  <CardDescription>
+                    Itens que precisam de revisao manual apos a tentativa de sincronizacao.
+                  </CardDescription>
+                </div>
+                <Button variant="outline" size="sm" onClick={clearAllPendencies}>
+                  Limpar lista
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Dispositivo</TableHead>
+                      <TableHead>IP</TableHead>
+                      <TableHead>Motivo</TableHead>
+                      <TableHead>Atualizado</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {syncPendencies.map((item) => (
+                      <TableRow key={item.key}>
+                        <TableCell className="font-medium text-xs lg:text-sm">{item.name}</TableCell>
+                        <TableCell className="text-xs lg:text-sm">{item.ip}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">{item.reason}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {item.updatedAt ? new Date(item.updatedAt).toLocaleString("pt-BR") : "-"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
         <TabsContent value="movidesk">

@@ -7,7 +7,7 @@ const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379';
 
 export const QUEUE_NAMES = [
   'netbox-sync',
-  'jumpserver-sync',
+  'netbox-pending-refresh',
   'oxidized-sync',
   'snmp-discovery',
   'snmp-polling',
@@ -58,7 +58,7 @@ const queueFactory = (name, options = {}) => new Queue(name, {
 
 // Define queues
 export const netboxSyncQueue = queueFactory('netbox-sync');
-export const jumpserverSyncQueue = queueFactory('jumpserver-sync');
+export const netboxPendingRefreshQueue = queueFactory('netbox-pending-refresh');
 export const oxidizedSyncQueue = queueFactory('oxidized-sync');
 export const snmpDiscoveryQueue = queueFactory('snmp-discovery');
 export const snmpPollingQueue = queueFactory('snmp-polling', { defaultJobOptions: { ...defaultJobOptions, attempts: 1 } });
@@ -73,7 +73,7 @@ export const libreNmsStatusQueue = queueFactory('librenms-status', { defaultJobO
 
 const queueMap = new Map([
   ['netbox-sync', netboxSyncQueue],
-  ['jumpserver-sync', jumpserverSyncQueue],
+  ['netbox-pending-refresh', netboxPendingRefreshQueue],
   ['oxidized-sync', oxidizedSyncQueue],
   ['snmp-discovery', snmpDiscoveryQueue],
   ['snmp-polling', snmpPollingQueue],
@@ -107,6 +107,7 @@ export async function addNetboxSyncJob(options, userId, tenantId) {
     url: options?.url || null,
     token: options?.token || null,
     deviceFilters: options?.deviceFilters || null,
+    fullSync: Boolean(options?.fullSync),
     userId,
     tenantId,
     startedAt: new Date().toISOString(),
@@ -120,17 +121,20 @@ export async function addNetboxSyncJob(options, userId, tenantId) {
   });
 }
 
-export async function addJumpserverSyncJob({ syncJobId, devices, jumpserverConfig, threshold }) {
+export async function addNetboxPendingRefreshJob(options, userId = null, tenantId = null) {
   const payload = {
-    syncJobId,
-    devices,
-    jumpserverConfig,
-    threshold,
+    url: options?.url || null,
+    token: options?.token || null,
+    limit: options?.limit || null,
+    defaultCredentials: options?.defaultCredentials || {},
+    userId,
+    tenantId,
     startedAt: new Date().toISOString(),
   };
-  const jobId = `jumpserver-sync-${syncJobId}-${Date.now()}`;
-  return await jumpserverSyncQueue.add('sync', payload, {
+  const jobId = `netbox-pending-refresh-${Date.now()}`;
+  return await netboxPendingRefreshQueue.add('refresh', payload, {
     ...defaultJobOptions,
+    attempts: 1,
     jobId,
   });
 }
@@ -310,6 +314,7 @@ export function getAllQueues() {
 export async function closeQueues() {
   await Promise.all([
     netboxSyncQueue.close(),
+    netboxPendingRefreshQueue.close(),
     oxidizedSyncQueue.close(),
     snmpDiscoveryQueue.close(),
     snmpPollingQueue.close(),

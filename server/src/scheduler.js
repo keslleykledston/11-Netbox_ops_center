@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import { PrismaClient } from "@prisma/client";
 import { addNetboxSyncJob, addOxidizedSyncJob, addSnmpPollingJob, addLibreNmsStatusJob, closeQueues } from "./queues/index.js";
 

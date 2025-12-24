@@ -1,7 +1,7 @@
 import { Worker } from 'bullmq';
 import Redis from 'ioredis';
 import { processNetboxSync } from './processors/netbox-sync.js';
-import { processJumpserverSync } from './processors/jumpserver-sync.js';
+import { processNetboxPendingRefresh } from './processors/netbox-pending-refresh.js';
 import { processSnmpDiscovery } from './processors/snmp-discovery.js';
 import { processSnmpPolling } from './processors/snmp-polling.js';
 // import { processCheckmkSync } from './processors/checkmk-sync.js';  // DEPRECATED
@@ -26,7 +26,7 @@ export function startQueueWorkers() {
   });
   workers = [
     new Worker('netbox-sync', processNetboxSync, { connection, concurrency: 2 }),
-    new Worker('jumpserver-sync', processJumpserverSync, { connection, concurrency: 2 }),
+    new Worker('netbox-pending-refresh', processNetboxPendingRefresh, { connection, concurrency: 1 }),
     new Worker('oxidized-sync', processOxidizedSync, { connection }),
     new Worker('snmp-discovery', processSnmpDiscovery, { connection, concurrency: 4 }),
     new Worker('snmp-polling', processSnmpPolling, { connection, concurrency: 6 }),

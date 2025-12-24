@@ -296,6 +296,43 @@ model NetboxDeviceSnapshot {
   updatedAt     DateTime @updatedAt
 }
 
+model NetboxSyncState {
+  id            Int      @id @default(autoincrement())
+  key           String
+  tenantId      Int?
+  lastCursor    String?
+  lastSuccessAt DateTime?
+  lastRunAt     DateTime?
+  lastError     String?
+  metadata      String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([key, tenantId])
+  @@index([tenantId])
+}
+
+model NetboxPendingDevice {
+  id            Int      @id @default(autoincrement())
+  netboxId      Int      @unique
+  tenantNetboxId Int?
+  tenantName    String?
+  deviceName    String?
+  ipAddress     String?
+  missingFields String?
+  status        String   @default("pending")
+  attempts      Int      @default(0)
+  lastCheckedAt DateTime?
+  nextCheckAt   DateTime?
+  lastError     String?
+  lastSeenAt    DateTime @default(now())
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status, nextCheckAt])
+  @@index([tenantNetboxId])
+}
+
 // Snapshot de assets/hosts do JumpServer
 model JumpserverAssetSnapshot {
   id          Int      @id @default(autoincrement())
@@ -331,52 +368,4 @@ model MovideskSyncAction {
   updatedAt        DateTime @updatedAt
 
   @@index([movideskCompanyId])
-}
-
-model SyncJob {
-  id               String   @id @default(cuid())
-  status           String
-  type             String
-  startedAt        DateTime @default(now())
-  completedAt      DateTime?
-  totalDevices     Int      @default(0)
-  processedDevices Int      @default(0)
-  createdAssets    Int      @default(0)
-  updatedAssets    Int      @default(0)
-  errors           Json?
-  config           Json?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-
-  pendingActions PendingAction[]
-
-  @@index([status, startedAt])
-}
-
-model PendingAction {
-  id             String   @id @default(cuid())
-  syncJobId      String
-  syncJob        SyncJob  @relation(fields: [syncJobId], references: [id], onDelete: Cascade)
-
-  action         String
-  deviceId       String
-  deviceName     String
-  deviceIp       String?
-  tenantName     String
-
-  matchScore     Float?
-  matchedAssetId String?
-
-  status         String
-  approvedBy     String?
-  approvedAt     DateTime?
-
-  netboxData     Json
-  jumpserverData Json?
-
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  @@index([syncJobId, status])
-  @@index([status, createdAt])
 }

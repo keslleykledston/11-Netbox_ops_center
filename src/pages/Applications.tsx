@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Activity } from "lucide-react";
 import OperationalHubPanel from "@/components/hub/OperationalHubPanel";
+import { waitForJobCompletion } from "@/queues/job-client";
 
 const API_MODE = import.meta.env.VITE_USE_BACKEND === "true";
 
@@ -153,6 +154,8 @@ const Applications = () => {
 
   const isNetbox = (app: Application) => /netbox/i.test(app.name);
   const isJumpserver = (app: Application) => /jumpserver/i.test(app.name);
+  const isNetboxName = (name: string) => /netbox/i.test(name || "");
+  const isJumpserverName = (name: string) => /jumpserver/i.test(name || "");
   const isOxidized = (app: Application) => /oxidized/i.test(app.name);
 
   const loadCatalog = async (app: Application, what: ("device-roles" | "platforms" | "device-types" | "sites")[]) => {
@@ -176,8 +179,30 @@ const Applications = () => {
         deviceTypes: enableDeviceTypeFilter ? selectedDeviceTypes : undefined,
         sites: enableSiteFilter ? selectedSites : undefined,
       } : undefined;
-      const summary = await api.netboxSync(resources, app.url, app.apiKey, deviceFilters);
-      toast({ title: "Sincronização NetBox", description: `Tenants: ${summary.tenants ?? 0}, Devices: ${summary.devices ?? 0}` });
+      const summary: any = await api.netboxSync(resources, app.url, app.apiKey, deviceFilters);
+      if (summary?.jobId && summary?.queue) {
+        toast({ title: "Sincronização NetBox", description: `Job ${summary.jobId} enfileirado.` });
+        setNetboxSyncFor(null);
+        try {
+          const result: any = await waitForJobCompletion(summary.queue, summary.jobId);
+          const payload = result?.returnValue || result?.result || result?.returnvalue || {};
+          const tenants = payload?.tenants;
+          const devices = payload?.devices;
+          const sites = payload?.sites;
+          if (typeof tenants === "number" || typeof devices === "number" || typeof sites === "number") {
+            toast({
+              title: "Sincronização NetBox concluída",
+              description: `Tenants: ${tenants ?? 0}, Sites: ${sites ?? 0}, Devices: ${devices ?? 0}`,
+            });
+          } else {
+            toast({ title: "Sincronização NetBox concluída", description: `Job ${summary.jobId} finalizado.` });
+          }
+        } catch (err: any) {
+          toast({ title: "Falha na sincronização", description: String(err?.message || err), variant: "destructive" });
+        }
+        return;
+      }
+      toast({ title: "Sincronização NetBox", description: `Tenants: ${summary?.tenants ?? 0}, Devices: ${summary?.devices ?? 0}` });
       setNetboxSyncFor(null);
     } catch (e) {
       toast({ title: "Falha na sincronização", description: String((e as any)?.message || e), variant: "destructive" });
@@ -202,9 +227,31 @@ const Applications = () => {
 
   const doJumpserverTest = async (app: Application) => {
     try {
-      const res = await api.jumpserverTest(app.url, app.apiKey);
+      let jsConfig: any = {};
+      try {
+        if ((app as any).config) {
+          jsConfig = JSON.parse((app as any).config);
+        }
+      } catch { }
+      const username = jsConfig.username || undefined;
+      const password = jsConfig.password || undefined;
+      const organizationId = jsConfig.organizationId || undefined;
+      const res = await api.jumpserverTest(app.url, app.apiKey, {
+        username,
+        password,
+        organizationId,
+        storeToken: !!(username && password),
+        appId: app.id,
+      });
       const ok = (res as any)?.ok;
-      toast({ title: ok ? "Jumpserver acessível" : "Falha no Jumpserver", description: `Status: ${(res as any)?.status || (res as any)?.error || ""}`, variant: ok ? "default" : "destructive" });
+      const tokenStored = (res as any)?.tokenStored;
+      const statusText = (res as any)?.status || (res as any)?.error || "";
+      const extra = tokenStored ? "Token atualizado." : "";
+      toast({
+        title: ok ? "Jumpserver acessível" : "Falha no Jumpserver",
+        description: `Status: ${statusText} ${extra}`.trim(),
+        variant: ok ? "default" : "destructive",
+      });
       updateApplication(app.id, { status: ok ? "connected" : "disconnected" });
     } catch (e) {
       toast({ title: "Falha no teste", description: String((e as any)?.message || e), variant: "destructive" });
@@ -301,7 +348,7 @@ const Applications = () => {
                   <Label>API Key</Label>
                   <Input type="password" value={newApp.apiKey} onChange={(e) => setNewApp({ ...newApp, apiKey: e.target.value })} placeholder="Sua chave de API" />
                 </div>
-                {/netbox/i.test(newApp.name) && (
+                {(isNetboxName(newApp.name) || isJumpserverName(newApp.name)) && (
                   <>
                     <div className="space-y-1">
                       <Label>Login (Opcional)</Label>
@@ -311,16 +358,18 @@ const Applications = () => {
                       <Label>Senha (Opcional)</Label>
                       <Input type="password" value={newApp.password} onChange={(e) => setNewApp({ ...newApp, password: e.target.value })} placeholder="Senha NetBox" />
                     </div>
-                    <div className="space-y-1 md:col-span-3">
-                      <Label>Chave Privada RSA (Para Secrets)</Label>
-                      <textarea
-                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        value={newApp.privateKey}
-                        onChange={(e) => setNewApp({ ...newApp, privateKey: e.target.value })}
-                        placeholder="-----BEGIN RSA PRIVATE KEY----- ..."
-                      />
-                      <p className="text-xs text-muted-foreground">Cole o conteúdo do arquivo .pem aqui para descriptografar senhas.</p>
-                    </div>
+                    {isNetboxName(newApp.name) && (
+                      <div className="space-y-1 md:col-span-3">
+                        <Label>Chave Privada RSA (Para Secrets)</Label>
+                        <textarea
+                          className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          value={newApp.privateKey}
+                          onChange={(e) => setNewApp({ ...newApp, privateKey: e.target.value })}
+                          placeholder="-----BEGIN RSA PRIVATE KEY----- ..."
+                        />
+                        <p className="text-xs text-muted-foreground">Cole o conteúdo do arquivo .pem aqui para descriptografar senhas.</p>
+                      </div>
+                    )}
                   </>
                 )}
                 <div className="flex gap-2">
@@ -402,7 +451,7 @@ const Applications = () => {
                     )}
                   </div>
                 </div>
-                {isNetbox(app) && editingId === app.id && (
+                {(isNetbox(app) || isJumpserver(app)) && editingId === app.id && (
                   <>
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
@@ -423,16 +472,18 @@ const Applications = () => {
                         />
                       </div>
                     </div>
-                    <div className="space-y-2">
-                      <Label>Chave Privada RSA</Label>
-                      <textarea
-                        className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                        value={editForm.privateKey}
-                        onChange={(e) => setEditForm(prev => ({ ...prev, privateKey: e.target.value }))}
-                        placeholder="-----BEGIN RSA PRIVATE KEY----- (Deixe em branco para manter a atual)"
-                      />
-                      <p className="text-xs text-muted-foreground">Cole a chave privada para atualizar. Deixe em branco para manter a existente.</p>
-                    </div>
+                    {isNetbox(app) && (
+                      <div className="space-y-2">
+                        <Label>Chave Privada RSA</Label>
+                        <textarea
+                          className="flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                          value={editForm.privateKey}
+                          onChange={(e) => setEditForm(prev => ({ ...prev, privateKey: e.target.value }))}
+                          placeholder="-----BEGIN RSA PRIVATE KEY----- (Deixe em branco para manter a atual)"
+                        />
+                        <p className="text-xs text-muted-foreground">Cole a chave privada para atualizar. Deixe em branco para manter a existente.</p>
+                      </div>
+                    )}
                   </>
                 )}
                 <div className="flex gap-2 flex-wrap">
@@ -820,7 +871,11 @@ const Applications = () => {
       </Dialog>
 
       <Dialog open={showHubModal} onOpenChange={setShowHubModal}>
-        <DialogContent className="max-w-6xl max-h-[90vh] overflow-hidden flex flex-col p-0">
+        <DialogContent
+          className="max-w-6xl max-h-[90vh] overflow-hidden flex flex-col p-0"
+          onInteractOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+        >
           <DialogHeader className="px-6 pt-6">
             <DialogTitle className="flex items-center gap-2">
               <Activity className="h-5 w-5 text-primary" />

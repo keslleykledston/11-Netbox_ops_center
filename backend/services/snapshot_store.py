@@ -109,11 +109,13 @@ async def upsert_jumpserver_assets(assets: Iterable[Dict[str, Any]]) -> None:
         if isinstance(platform, dict):
             platform = platform.get("name") or platform.get("value") or platform.get("id")
 
+        ip_address = asset.get("ip") or asset.get("address") or asset.get("host") or asset.get("ip_address")
+
         rows.append({
             "jumpserverId": str(jumpserver_id),
             "name": asset.get("name"),
             "hostname": asset.get("hostname"),
-            "ipAddress": asset.get("ip"),
+            "ipAddress": ip_address,
             "assetId": asset.get("asset_id") or asset.get("id"),
             "hostId": asset.get("host_id"),
             "nodePath": node_path,
@@ -233,6 +235,9 @@ async def upsert_sync_actions(actions: Iterable[Dict[str, Any]]) -> None:
             movidesk_id = action.get("movidesk_id")
             movidesk_company_id = company_map.get(str(movidesk_id)) if movidesk_id else None
             systems = action.get("systems")
+            action_type = action.get("type")
+            if not action_type:
+                action_type = "synced" if action.get("status") == "synced" else "unknown"
             await conn.execute(
                 query,
                 str(action.get("id")),
@@ -242,7 +247,7 @@ async def upsert_sync_actions(actions: Iterable[Dict[str, Any]]) -> None:
                 action.get("client_name"),
                 action.get("jumpserver_node"),
                 action.get("status"),
-                action.get("type"),
+                action_type,
                 json.dumps(systems, ensure_ascii=True) if systems is not None else None,
                 action.get("details"),
                 json.dumps(action, ensure_ascii=True),

@@ -1,12 +1,6 @@
+import "./env.js";
 import { PrismaClient } from '@prisma/client';
-import dotenv from 'dotenv';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import { validateDeviceCredentials } from './modules/access/credential-validator.js';
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const envPath = path.resolve(__dirname, '../.env');
-dotenv.config({ path: envPath });
 
 const prisma = new PrismaClient();
 

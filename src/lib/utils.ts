@@ -85,6 +85,7 @@ export interface Application {
   apiKey: string;
   status: 'connected' | 'disconnected' | 'testing';
   description?: string;
+  config?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -155,14 +155,21 @@ bare_install() {
   cd "$APP_DIR"
   log "[+] Preparing env files"
   [[ -f .env ]] || cp .env.example .env || true
-  [[ -f server/.env ]] || cp server/.env.example server/.env || true
+  [[ -f .env.local ]] || touch .env.local || true
   # Generate secrets if placeholders present
   if need_cmd openssl; then
     JWT_SECRET=$(openssl rand -hex 24)
     CRED=$(openssl rand -base64 32)
-    sed -i.bak "s/^JWT_SECRET=.*/JWT_SECRET=${JWT_SECRET}/" server/.env 2>/dev/null || true
-    sed -i.bak "s/^CRED_ENCRYPTION_KEY.*/CRED_ENCRYPTION_KEY=${CRED}/" server/.env 2>/dev/null || echo "CRED_ENCRYPTION_KEY=${CRED}" >> server/.env
-    rm -f server/.env.bak || true
+    if ! grep -q '^JWT_SECRET=' .env.local 2>/dev/null; then
+      if ! grep -q '^JWT_SECRET=' .env 2>/dev/null || grep -q '^JWT_SECRET=change_me' .env 2>/dev/null; then
+        echo "JWT_SECRET=${JWT_SECRET}" >> .env.local
+      fi
+    fi
+    if ! grep -q '^CRED_ENCRYPTION_KEY=' .env.local 2>/dev/null; then
+      if ! grep -q '^CRED_ENCRYPTION_KEY=' .env 2>/dev/null || grep -q '^CRED_ENCRYPTION_KEY=change_me' .env 2>/dev/null; then
+        echo "CRED_ENCRYPTION_KEY=${CRED}" >> .env.local
+      fi
+    fi
   fi
 
   log "[+] Installing dependencies"
@@ -194,4 +201,3 @@ main() {
 }
 
 main "$@"
-

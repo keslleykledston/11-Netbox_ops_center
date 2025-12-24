@@ -1,5 +1,10 @@
+import asyncio
+import base64
 import httpx
+import json
 import logging
+import random
+import time
 from backend.core.config import settings
 from typing import List, Dict, Any, Optional
 
@@ -10,48 +15,122 @@ class JumpServerService:
         self.base_url = (settings.JUMPSERVER_URL or "").rstrip("/")
         self._cached_token: Optional[str] = settings.JUMPSERVER_TOKEN
         self._token_type = "Bearer" # N8N flow uses Bearer for JWT
+        self._token_expires_at: Optional[float] = None
+        self._login_lock = asyncio.Lock()
 
     def _normalize_path(self, path: str) -> str:
         """Normalize JumpServer paths to avoid false negatives (extra slashes/spaces)."""
         clean_parts = [p.strip() for p in path.split("/") if p and p.strip()]
         return "/" + "/".join(clean_parts)
 
-    async def login(self) -> Optional[str]:
+    def _decode_jwt_exp(self, token: str) -> Optional[float]:
+        try:
+            parts = token.split(".")
+            if len(parts) < 2:
+                return None
+            payload = parts[1]
+            padding = "=" * (-len(payload) % 4)
+            decoded = base64.urlsafe_b64decode(f"{payload}{padding}".encode("utf-8"))
+            data = json.loads(decoded.decode("utf-8"))
+            exp = data.get("exp")
+            if isinstance(exp, (int, float)):
+                return float(exp)
+        except Exception:
+            return None
+        return None
+
+    def _resolve_token_expiry(self, data: Dict[str, Any], token: str) -> Optional[float]:
+        exp = self._decode_jwt_exp(token)
+        if exp:
+            return exp
+        if isinstance(data.get("expires_in"), (int, float)):
+            return time.time() + float(data["expires_in"])
+        if isinstance(data.get("expire_in"), (int, float)):
+            return time.time() + float(data["expire_in"])
+        if isinstance(data.get("expired_at"), (int, float)):
+            return float(data["expired_at"])
+        if isinstance(data.get("expire_at"), (int, float)):
+            return float(data["expire_at"])
+        return None
+
+    def _token_is_valid(self) -> bool:
+        if not self._cached_token:
+            return False
+        if not self._token_expires_at:
+            return True
+        return time.time() < (self._token_expires_at - 30)
+
+    async def _wait_for_token_ready(self) -> None:
+        await asyncio.sleep(random.uniform(3.0, 5.0))
+
+    async def login(self, force: bool = False) -> Optional[str]:
         """Perform login to get a fresh JWT token."""
         if not self.base_url or not settings.JUMPSERVER_USERNAME or not settings.JUMPSERVER_PASSWORD:
             logger.warning("JumpServer base_url or credentials not configured")
             return None
-            
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            endpoint = f"{self.base_url}/api/v1/authentication/auth/"
-            payload = {
-                "username": settings.JUMPSERVER_USERNAME,
-                "password": settings.JUMPSERVER_PASSWORD
-            }
-            try:
-                response = await client.post(endpoint, json=payload, timeout=10.0)
-                response.raise_for_status()
-                data = response.json()
-                self._cached_token = data.get("token")
+
+        if not force and self._token_is_valid():
+            return self._cached_token
+
+        async with self._login_lock:
+            if not force and self._token_is_valid():
                 return self._cached_token
-            except Exception as e:
-                logger.error(f"Failed to login to JumpServer: {e}")
-                return None
+
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                endpoint = f"{self.base_url}/api/v1/authentication/auth/"
+                payload = {
+                    "username": settings.JUMPSERVER_USERNAME,
+                    "password": settings.JUMPSERVER_PASSWORD
+                }
+                try:
+                    logger.info(f"Attempting login to JumpServer as {settings.JUMPSERVER_USERNAME}")
+                    response = await client.post(endpoint, json=payload, timeout=10.0)
+                    response.raise_for_status()
+                    data = response.json()
+                    token = data.get("token")
+                    if token:
+                        self._cached_token = token
+                        self._token_expires_at = self._resolve_token_expiry(data, token)
+                        await self._wait_for_token_ready()
+                        logger.info("Successfully authenticated to JumpServer")
+                        return token
+                    logger.error("JumpServer login response did not include a token")
+                    self._cached_token = None
+                    self._token_expires_at = None
+                    return None
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Failed to login to JumpServer: {e}")
+                    logger.error(f"Response status: {e.response.status_code}")
+                    logger.error(f"Response body: {e.response.text}")
+                    return None
+                except Exception as e:
+                    logger.error(f"Failed to login to JumpServer: {e}")
+                    return None
 
     async def get_headers(self) -> Dict[str, str]:
         # If we have a static token, use it. Otherwise, use cached or login.
-        token = settings.JUMPSERVER_TOKEN or self._cached_token
+        token = settings.JUMPSERVER_TOKEN or None
+
+        if not token:
+            if not self._token_is_valid() and settings.JUMPSERVER_USERNAME and settings.JUMPSERVER_PASSWORD:
+                token = await self.login()
+            else:
+                token = self._cached_token
         
-        if not token and settings.JUMPSERVER_USERNAME and settings.JUMPSERVER_PASSWORD:
-            token = await self.login()
-            
-        prefix = "Bearer" if settings.JUMPSERVER_USERNAME else "Token"
-        
-        return {
-            "Authorization": f"{prefix} {token or ''}",
+        # Base headers
+        headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+        
+        # Only add Authorization header if we have a valid token
+        if token:
+            prefix = "Bearer" if settings.JUMPSERVER_USERNAME else "Token"
+            headers["Authorization"] = f"{prefix} {token}"
+        else:
+            logger.warning("No Jumpserver token available. API calls may fail.")
+            
+        return headers
 
     async def get_assets(self) -> List[Dict[str, Any]]:
         if not self.base_url:
@@ -64,7 +143,7 @@ class JumpServerService:
                 response = await client.get(endpoint, headers=headers, timeout=10.0)
                 if response.status_code == 401:
                     # Token might be expired, try login once
-                    await self.login()
+                    await self.login(force=True)
                     headers = await self.get_headers()
                     response = await client.get(endpoint, headers=headers, timeout=10.0)
                 
@@ -101,7 +180,7 @@ class JumpServerService:
                 while url:
                     response = await client.get(url, headers=headers, params=params, timeout=10.0)
                     if response.status_code == 401:
-                        await self.login()
+                        await self.login(force=True)
                         headers = await self.get_headers()
                         response = await client.get(url, headers=headers, params=params, timeout=10.0)
 
@@ -164,6 +243,15 @@ class JumpServerService:
             logger.info(f"Moving node {node_id} to parent_id={parent_id} parent_key={parent_key} org={parent_org} payload={payload}")
             try:
                 response = await client.patch(endpoint, headers=headers, json=payload, timeout=10.0)
+                if response.status_code == 401:
+                    # Token expired, refresh and retry
+                    logger.warning("Token expired, refreshing...")
+                    await self.login(force=True)
+                    headers = await self.get_headers()
+                    if parent_org:
+                        headers = {**headers, "X-JMS-ORG": parent_org}
+                    response = await client.patch(endpoint, headers=headers, json=payload, timeout=10.0)
+                
                 response.raise_for_status()
                 logger.info(f"[JS MOVE] status={response.status_code} parent={parent_id} body={response.text}")
                 result = response.json()
@@ -184,6 +272,13 @@ class JumpServerService:
             endpoint = f"{self.base_url}/api/v1/assets/nodes/{node_id}/"
             try:
                 response = await client.delete(endpoint, headers=headers, timeout=10.0)
+                if response.status_code == 401:
+                    # Token expired, refresh and retry
+                    logger.warning("Token expired, refreshing...")
+                    await self.login(force=True)
+                    headers = await self.get_headers()
+                    response = await client.delete(endpoint, headers=headers, timeout=10.0)
+                
                 if response.status_code in (200, 204, 404):
                     logger.info(f"Deleted node {node_id} (status={response.status_code})")
                     return True
@@ -217,6 +312,15 @@ class JumpServerService:
             try:
                 logger.info(f"Creating child node under parent_id={parent_id} via {create_endpoint}")
                 resp = await client.post(create_endpoint, headers=headers, json={}, timeout=10.0)
+                if resp.status_code == 401:
+                    # Token expired, refresh and retry
+                    logger.warning("Token expired, refreshing...")
+                    await self.login(force=True)
+                    headers = await self.get_headers()
+                    if parent_org:
+                        headers = {**headers, "X-JMS-ORG": parent_org}
+                    resp = await client.post(create_endpoint, headers=headers, json={}, timeout=10.0)
+                
                 logger.info(f"[JS CREATE CHILD] status={resp.status_code} body={resp.text}")
                 resp.raise_for_status()
                 created = resp.json()
@@ -230,6 +334,15 @@ class JumpServerService:
                 rename_payload = {"value": name}
                 logger.info(f"Renaming child node {child_id} to '{name}'")
                 rename_resp = await client.patch(rename_endpoint, headers=headers, json=rename_payload, timeout=10.0)
+                if rename_resp.status_code == 401:
+                    # Token expired, refresh and retry
+                    logger.warning("Token expired during rename, refreshing...")
+                    await self.login(force=True)
+                    headers = await self.get_headers()
+                    if parent_org:
+                        headers = {**headers, "X-JMS-ORG": parent_org}
+                    rename_resp = await client.patch(rename_endpoint, headers=headers, json=rename_payload, timeout=10.0)
+                
                 logger.info(f"[JS RENAME] status={rename_resp.status_code} body={rename_resp.text}")
                 rename_resp.raise_for_status()
                 renamed = rename_resp.json()

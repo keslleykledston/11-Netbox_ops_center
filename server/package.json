@@ -10,9 +10,9 @@
     "start:worker": "node src/worker.js",
     "start:scheduler": "node src/scheduler.js",
     "test": "vitest --run",
-    "db:push": "prisma db push",
-    "db:studio": "prisma studio",
-    "prisma:generate": "prisma generate"
+    "db:push": "node scripts/prisma-cli.js db push",
+    "db:studio": "node scripts/prisma-cli.js studio",
+    "prisma:generate": "node scripts/prisma-cli.js generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
@@ -24,7 +24,6 @@
     "express-ws": "^5.0.2",
     "ioredis": "^5.4.2",
     "jsonwebtoken": "^9.0.2",
-    "fuse.js": "^7.0.0",
     "node-fetch": "^3.3.2",
     "net-snmp": "^3.26.0",
     "prom-client": "^15.1.3",

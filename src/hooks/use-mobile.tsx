@@ -223,7 +223,7 @@ export function useApplications(tenantId?: string) {
     refreshApplications();
   }, [refreshApplications]);
 
-  const createApplication = useCallback((application: Omit<Application, 'id' | 'createdAt' | 'updatedAt'>) => {
+  const createApplication = useCallback((application: Omit<Application, 'id' | 'createdAt' | 'updatedAt'> & { username?: string; password?: string; privateKey?: string; config?: any }) => {
     try {
       if (API_MODE) {
         return api.createApplication({
@@ -232,6 +232,10 @@ export function useApplications(tenantId?: string) {
           apiKey: application.apiKey,
           status: application.status,
           description: application.description,
+          username: application.username,
+          password: application.password,
+          privateKey: application.privateKey,
+          config: (application as any).config,
         }).then((created) => { refreshApplications(); return created as unknown as Application; });
       }
       const newApplication = db.createApplication(application);

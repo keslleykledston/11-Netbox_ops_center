@@ -5,7 +5,7 @@ import { syncRouterDb } from '../../modules/monitor/oxidized-service.js';
 const prisma = new PrismaClient();
 
 export async function processNetboxSync(job) {
-  const { resources, url, token, deviceFilters, tenantId, defaultCredentials } = job.data;
+  const { resources, url, token, deviceFilters, tenantId, defaultCredentials, fullSync } = job.data;
 
   try {
     // Update progress
@@ -19,6 +19,7 @@ export async function processNetboxSync(job) {
       tenantScopeId: tenantId || null,
       deviceFilters,
       defaultCredentials,
+      fullSync: Boolean(fullSync),
       onProgress: async (progress, message) => {
         await job.updateProgress(progress);
         await job.log(message);
@@ -63,6 +64,23 @@ export async function processNetboxSync(job) {
     };
   } catch (error) {
     console.error('Netbox sync job failed:', error);
+    try {
+      await prisma.netboxSyncState.upsert({
+        where: { key_tenantId: { key: 'devices', tenantId: tenantId || null } },
+        update: {
+          lastRunAt: new Date(),
+          lastError: String(error?.message || error),
+        },
+        create: {
+          key: 'devices',
+          tenantId: tenantId || null,
+          lastRunAt: new Date(),
+          lastError: String(error?.message || error),
+        },
+      });
+    } catch (stateErr) {
+      console.warn('[NetBox][WARN] Failed to update sync state after error:', stateErr?.message || stateErr);
+    }
     throw error;
   }
 }

@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import os
+import json
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,12 +10,13 @@ from cachetools import TTLCache
 from pydantic import BaseModel
 
 from backend.core.config import settings
-from backend.core.db import init_db, close_db
+from backend.core.db import init_db, close_db, get_pool
 from backend.services.netbox_service import netbox_svc
 from backend.services.jumpserver_service import jumpserver_svc
 from backend.services.movidesk_service import movidesk_svc
 from backend.services.oxidized_service import oxidized_svc
 from backend.services.sync_service import sync_svc
+from backend.services.snapshot_store import upsert_movidesk_companies, upsert_jumpserver_assets
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +52,110 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _is_snapshot_fresh(last_seen, ttl_seconds: int) -> bool:
+    if not last_seen:
+        return False
+    if isinstance(last_seen, str):
+        try:
+            last_seen = datetime.fromisoformat(last_seen)
+        except ValueError:
+            return False
+    if not isinstance(last_seen, datetime):
+        return False
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    return now - last_seen <= timedelta(seconds=ttl_seconds)
+
+
+async def load_jumpserver_snapshot_assets(ttl_seconds: int) -> Optional[List[Dict[str, Any]]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "JumpserverAssetSnapshot"')
+        if not _is_snapshot_fresh(last_seen, ttl_seconds):
+            return None
+        rows = await conn.fetch(
+            'SELECT "jumpserverId", "name", "hostname", "ipAddress", "nodePath" FROM "JumpserverAssetSnapshot"'
+        )
+    assets = []
+    for row in rows:
+        node_path = row.get("nodePath") if isinstance(row, dict) else row["nodePath"]
+        nodes_display = []
+        if node_path:
+            if isinstance(node_path, str) and "," in node_path:
+                nodes_display = [n.strip() for n in node_path.split(",") if n.strip()]
+            else:
+                nodes_display = [str(node_path)]
+        assets.append({
+            "id": str(row["jumpserverId"]),
+            "name": row["name"],
+            "hostname": row["hostname"],
+            "ip": row["ipAddress"],
+            "nodes_display": nodes_display,
+        })
+    return assets
+
+
+async def load_netbox_snapshot_devices(limit: int, group_filter: str, ttl_seconds: int) -> Optional[List[Dict[str, Any]]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        state = await conn.fetchrow(
+            'SELECT "metadata", "lastSuccessAt" FROM "NetboxSyncState" WHERE "key" = $1 AND "tenantId" IS NULL',
+            "devices",
+        )
+        if not state:
+            return None
+        try:
+            metadata = json.loads(state["metadata"]) if state["metadata"] else {}
+        except Exception:
+            metadata = {}
+        full_sync_completed = bool(metadata.get("fullSyncCompleted") or metadata.get("fullSync"))
+        if not full_sync_completed:
+            return None
+        if not _is_snapshot_fresh(state["lastSuccessAt"], ttl_seconds):
+            return None
+
+        last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "NetboxDeviceSnapshot"')
+        if not _is_snapshot_fresh(last_seen, ttl_seconds):
+            return None
+
+        query = """
+            SELECT d."netboxId",
+                   d."name",
+                   d."ipAddress",
+                   d."tenantNetboxId",
+                   t."name" AS tenant_name,
+                   t."groupName" AS tenant_group,
+                   s."name" AS site_name
+            FROM "NetboxDeviceSnapshot" d
+            LEFT JOIN "NetboxTenantSnapshot" t ON d."tenantNetboxId" = t."netboxId"
+            LEFT JOIN "NetboxSiteSnapshot" s ON d."siteNetboxId" = s."netboxId"
+        """
+        params: List[Any] = []
+        if group_filter:
+            query += ' WHERE LOWER(t."groupName") = LOWER($1)'
+            params.append(group_filter)
+        query += ' ORDER BY d."name" ASC'
+        if limit > 0:
+            query += f' LIMIT {int(limit)}'
+        rows = await conn.fetch(query, *params)
+
+    devices = []
+    for row in rows:
+        devices.append({
+            "netboxId": row["netboxId"],
+            "name": row["name"],
+            "ipAddress": row["ipAddress"],
+            "tenantName": row["tenant_name"],
+            "tenantGroup": row["tenant_group"],
+            "siteName": row["site_name"],
+        })
+    return devices
 
 @app.on_event("startup")
 async def startup_event():
@@ -108,7 +216,20 @@ async def root():
 async def movidesk_webhook(payload: MovideskWebhook, background_tasks: BackgroundTasks):
     tenant_data = movidesk_svc.parse_webhook_payload(payload.dict())
     
-    # Process netbox tenant creation
+    if not settings.MOVIDESK_WEBHOOK_AUTO_CREATE:
+        await upsert_movidesk_companies([{
+            "id": tenant_data.get("movidesk_id"),
+            "businessName": tenant_data.get("name"),
+            "cpfCnpj": tenant_data.get("cnpj"),
+            "isActive": True,
+            "source": "webhook",
+        }])
+        return {
+            "status": "pending",
+            "message": "Alteracoes externas desativadas. Aguardando aprovacao manual.",
+        }
+
+    # Process netbox tenant creation (explicitly enabled)
     try:
         tenant = await netbox_svc.create_tenant(
             name=tenant_data["name"],
@@ -122,18 +243,98 @@ async def movidesk_webhook(payload: MovideskWebhook, background_tasks: Backgroun
 # Módulo de Auditoria: Netbox vs JumpServer
 @app.get("/audit/jumpserver-missing")
 async def audit_jumpserver(limit: int = 0):
-    # Performance: Run queries simultaneously
-    nb_devices_task = netbox_svc.get_devices()
-    js_assets_task = jumpserver_svc.get_assets()
-    
-    nb_devices, js_assets = await asyncio.gather(nb_devices_task, js_assets_task)
-    
+    snapshot_ttl = settings.HUB_SNAPSHOT_TTL or settings.CACHE_TTL
+    group_filter = (settings.NETBOX_TENANT_GROUP_FILTER or "").strip()
+    nb_devices = await load_netbox_snapshot_devices(limit, group_filter, snapshot_ttl)
+    using_nb_snapshot = nb_devices is not None
+    if not using_nb_snapshot:
+        nb_devices = await netbox_svc.get_devices()
+
+    js_assets = await load_jumpserver_snapshot_assets(snapshot_ttl)
+    if js_assets is None:
+        js_assets = await jumpserver_svc.get_assets()
+        try:
+            await upsert_jumpserver_assets(js_assets)
+        except Exception as e:
+            logger.warning(f"Falha ao persistir JumpServer localmente: {e}")
+
+    group_filter_norm = group_filter.lower()
+    tenant_group_cache: Dict[int, Optional[str]] = {}
+
+    def extract_name(value):
+        if not value:
+            return None
+        if isinstance(value, dict):
+            return value.get("name") or value.get("display")
+        return getattr(value, "name", None) or getattr(value, "display", None)
+
+    def extract_device_id(device):
+        if isinstance(device, dict):
+            return device.get("netboxId") or device.get("id")
+        return getattr(device, "id", None)
+
+    def extract_device_name(device):
+        if isinstance(device, dict):
+            return device.get("name") or device.get("deviceName")
+        return getattr(device, "name", None)
+
+    def extract_device_tenant(device):
+        if isinstance(device, dict):
+            return device.get("tenantName") or device.get("tenant") or "N/A"
+        tenant_obj = getattr(device, "tenant", None)
+        return tenant_obj.name if tenant_obj else "N/A"
+
+    def extract_device_site(device):
+        if isinstance(device, dict):
+            return device.get("siteName") or "N/A"
+        site_obj = getattr(device, "site", None)
+        return site_obj.name if site_obj else "N/A"
+
+    def extract_device_ip(device):
+        if isinstance(device, dict):
+            ip_val = device.get("ipAddress") or device.get("ip")
+            if isinstance(ip_val, str):
+                return ip_val.split("/")[0]
+            return None
+        primary_ip = getattr(device, "primary_ip", None)
+        if primary_ip and getattr(primary_ip, "address", None):
+            return str(primary_ip.address).split("/")[0]
+        return None
+
+    async def resolve_tenant_group_name(tenant) -> Optional[str]:
+        if not tenant:
+            return None
+        tenant_id = getattr(tenant, "id", None) or (tenant.get("id") if isinstance(tenant, dict) else None)
+        if tenant_id and tenant_id in tenant_group_cache:
+            return tenant_group_cache[tenant_id]
+        group_obj = getattr(tenant, "group", None) or getattr(tenant, "tenant_group", None)
+        group_name = extract_name(group_obj)
+        if not group_name and tenant_id:
+            try:
+                tenant_full = await netbox_svc.get_tenant_by_id(tenant_id)
+                group_obj = getattr(tenant_full, "group", None) or getattr(tenant_full, "tenant_group", None)
+                group_name = extract_name(group_obj)
+            except Exception:
+                group_name = None
+        if tenant_id:
+            tenant_group_cache[tenant_id] = group_name
+        return group_name
+
     # Optional limit for testing
     nb_devices = list(nb_devices)
     
     # Filter out CAIXA-PRETA variations
-    nb_devices = [d for d in nb_devices if "CAIXA-PRETA" not in (d.name or "").upper()]
+    nb_devices = [d for d in nb_devices if "CAIXA-PRETA" not in (extract_device_name(d) or "").upper()]
     
+    if group_filter and not using_nb_snapshot:
+        filtered_devices = []
+        for device in nb_devices:
+            tenant = getattr(device, "tenant", None)
+            group_name = await resolve_tenant_group_name(tenant)
+            if group_name and group_name.lower() == group_filter_norm:
+                filtered_devices.append(device)
+        nb_devices = filtered_devices
+
     if limit > 0:
         nb_devices = nb_devices[:limit]
 
@@ -152,30 +353,47 @@ async def audit_jumpserver(limit: int = 0):
     
     missing = []
     for device in nb_devices:
-        primary_ip = getattr(device, 'primary_ip', None)
-        tenant_name = device.tenant.name if device.tenant else "N/A"
-        
-        if primary_ip:
-            ip_str = str(primary_ip.address).split("/")[0]
+        ip_str = extract_device_ip(device)
+        tenant_name = extract_device_tenant(device)
+        device_name = extract_device_name(device) or "N/A"
+        device_id = extract_device_id(device)
+        site_name = extract_device_site(device)
+
+        if ip_str:
             asset_info = js_map.get(ip_str)
-            
+
             error_reason = None
             if not asset_info:
                 error_reason = "IP not found in JumpServer"
             else:
-                # Validate if asset is in the correct Tenant Node
-                # Expected path: /DEFAULT/PRODUCAO/TenantName
-                expected_node = f"/DEFAULT/PRODUCAO/{tenant_name}"
-                if tenant_name != "N/A" and expected_node not in asset_info["nodes"]:
-                    error_reason = f"Node mismatch. Expected: {expected_node}"
-            
+                # Optional strict node validation (default: ignore node mismatches).
+                strict_nodes = (os.getenv("SANITY_CHECK_STRICT_NODES", "false").lower() == "true")
+                if strict_nodes:
+                    expected_suffixes = []
+                    if tenant_name and tenant_name != "N/A":
+                        expected_suffixes.append(f"/{tenant_name}".lower())
+                        expected_suffixes.append(f"/default/servidores/{tenant_name}/host".lower())
+                    if tenant_name and tenant_name != "N/A":
+                        expected_suffixes.append(f"/default/produção/{tenant_name}".lower())
+                        expected_suffixes.append(f"/default/producao/{tenant_name}".lower())
+                    node_list = asset_info.get("nodes") or []
+                    if isinstance(node_list, str):
+                        node_list = [node_list]
+                    normalized_nodes = [str(n).strip().lower() for n in node_list]
+                    matches_node = any(
+                        any(n.endswith(suffix) for suffix in expected_suffixes)
+                        for n in normalized_nodes
+                    )
+                    if expected_suffixes and not matches_node:
+                        error_reason = f"Node mismatch. Expected suffixes: {', '.join(expected_suffixes)}"
+
             if error_reason:
                 missing.append({
-                    "id": device.id,
-                    "name": device.name,
+                    "id": device_id,
+                    "name": device_name,
                     "ip": ip_str,
                     "tenant": tenant_name,
-                    "site": device.site.name if device.site else "N/A",
+                    "site": site_name,
                     "error": error_reason,
                     "js_asset_name": asset_info["name"] if asset_info else None
                 })

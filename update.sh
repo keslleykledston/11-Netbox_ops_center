@@ -54,13 +54,15 @@ else
     BACKUP_DIR="backups"
     mkdir -p "$BACKUP_DIR"
 
-    # Load envs if present
-    if [ -f server/.env ]; then
-        set -a
-        # shellcheck disable=SC1091
-        . server/.env
-        set +a
-    fi
+    # Load envs if present (root + local overrides)
+    set -a
+    for env_file in .env .env.local; do
+        if [ -f "$env_file" ]; then
+            # shellcheck disable=SC1091
+            . "$env_file"
+        fi
+    done
+    set +a
 
     DB_URL="${DATABASE_URL:-}"
     if [[ "$DB_URL" == postgresql* ]]; then

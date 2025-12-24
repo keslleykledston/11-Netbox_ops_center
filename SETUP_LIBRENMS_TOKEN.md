@@ -45,7 +45,6 @@ a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0
 Edite o arquivo `.env`:
 
 ```bash
-cd server
 nano .env
 ```
 
@@ -152,7 +151,7 @@ curl -s "http://localhost:8009/api/v0/devices" \
 
 ## 🔧 Configuração Completa do .env
 
-Seu arquivo `server/.env` deve ter estas configurações:
+Seu arquivo `.env` (ou `.env.local` para sobrescritas) deve ter estas configurações:
 
 ```env
 DATABASE_URL="postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops"
@@ -212,7 +211,7 @@ SNMP_POLL_INTERVAL_MS=0  # Desabilita SNMP polling interno
 ## ✅ Checklist de Verificação
 
 - [ ] Token do LibreNMS gerado
-- [ ] Token configurado no `server/.env` (linha `LIBRENMS_API_TOKEN`)
+- [ ] Token configurado no `.env` (linha `LIBRENMS_API_TOKEN`)
 - [ ] Containers reiniciados (`docker compose restart backend worker scheduler`)
 - [ ] Token carregado no backend (verificado com `printenv | grep LIBRENMS_API_TOKEN`)
 - [ ] Dispositivo com `monitoringEnabled: true` e SNMP configurado

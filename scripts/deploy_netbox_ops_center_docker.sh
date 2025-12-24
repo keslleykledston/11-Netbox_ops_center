@@ -110,8 +110,15 @@ write_envs() {
     cat >"$APP_DIR/.env" <<'ENVEOF'
 VITE_USE_BACKEND=true
 VITE_API_URL=/api
+VITE_HUB_API_URL=/hub-api
 API_SERVER_URL=http://localhost:4000
 SNMP_SERVER_URL=http://localhost:3001
+DATABASE_URL=postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops
+PORT=4000
+JWT_SECRET=change_me
+CRED_ENCRYPTION_KEY=change_me
+NETBOX_URL=http://localhost:8000
+NETBOX_TOKEN=
 SNMP_SERVER_PORT=3001
 SNMP_MAX_REPETITIONS=20
 SNMP_GLOBAL_TIMEOUT_MS=60000
@@ -121,20 +128,6 @@ OXIDIZED_ROUTER_DB=__OX_ROUTER__
 ENVEOF
     sed -i "s#__OX_URL__#${default_api}#" "$APP_DIR/.env"
     sed -i "s#__OX_ROUTER__#${default_router}#" "$APP_DIR/.env"
-  fi
-  mkdir -p "$APP_DIR/server"
-  if [[ ! -f "$APP_DIR/server/.env" ]]; then
-    cat >"$APP_DIR/server/.env" <<'SENVEOF'
-DATABASE_URL="postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops"
-PORT=4000
-JWT_SECRET=change_me
-NETBOX_URL=http://localhost:8000
-NETBOX_TOKEN=
-OXIDIZED_API_URL=__OX_URL__
-OXIDIZED_ROUTER_DB=__OX_ROUTER__
-SENVEOF
-    sed -i "s#__OX_URL__#${default_api}#" "$APP_DIR/server/.env"
-    sed -i "s#__OX_ROUTER__#${default_router}#" "$APP_DIR/server/.env"
   fi
 }
 

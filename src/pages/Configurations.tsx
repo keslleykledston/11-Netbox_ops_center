@@ -7,7 +7,7 @@ import { FileJson, Save, X, Loader2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
-import { useDevices } from "@/hooks/use-mobile";
+import { useApplications, useDevices } from "@/hooks/use-mobile";
 import { useToast } from "@/hooks/use-toast";
 import { db } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -20,7 +20,10 @@ function Configurations() {
   const { toast } = useToast();
   const { selectedTenantId, loading: tenantLoading } = useTenantContext();
   const { devices } = useDevices(selectedTenantId || undefined);
+  const { applications, updateApplication } = useApplications(selectedTenantId || undefined);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | undefined>(undefined);
+  const [rsaKey, setRsaKey] = useState("");
+  const [savingRsaKey, setSavingRsaKey] = useState(false);
   const [interfacesJson, setInterfacesJson] = useState(
     JSON.stringify({}, null, 2)
   );
@@ -211,6 +214,32 @@ function Configurations() {
     }
   };
 
+  const saveRsaKey = async () => {
+    if (!API_MODE) {
+      toast({ title: "Modo offline", description: "Ative o backend para salvar a chave RSA.", variant: "destructive" });
+      return;
+    }
+    if (!rsaKey.trim()) {
+      toast({ title: "Chave ausente", description: "Cole a chave RSA privada.", variant: "destructive" });
+      return;
+    }
+    const netboxApp = applications.find((app) => /netbox/i.test(app.name));
+    if (!netboxApp) {
+      toast({ title: "NetBox não configurado", description: "Cadastre a aplicação NetBox primeiro.", variant: "destructive" });
+      return;
+    }
+    setSavingRsaKey(true);
+    try {
+      await updateApplication(netboxApp.id, { privateKey: rsaKey } as any);
+      setRsaKey("");
+      toast({ title: "Chave salva", description: "Chave RSA enviada para o servidor com sucesso." });
+    } catch (err: any) {
+      toast({ title: "Falha ao salvar", description: String(err?.message || err), variant: "destructive" });
+    } finally {
+      setSavingRsaKey(false);
+    }
+  };
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -218,6 +247,40 @@ function Configurations() {
           <h1 className="text-3xl font-bold text-foreground">Configurações</h1>
           <p className="text-muted-foreground mt-2">Edite os arquivos de configuração JSON</p>
         </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>NetBox Secrets</CardTitle>
+            <CardDescription>Informe a chave RSA privada para descriptografar credenciais do NetBox.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <Textarea
+              value={rsaKey}
+              onChange={(e) => setRsaKey(e.target.value)}
+              className="font-mono text-sm min-h-[160px]"
+              placeholder="-----BEGIN RSA PRIVATE KEY-----"
+            />
+            <div className="flex gap-2">
+              <Button onClick={saveRsaKey} disabled={savingRsaKey} className="gap-2">
+                {savingRsaKey ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Salvando...
+                  </span>
+                ) : (
+                  <>
+                    <Save className="h-4 w-4" />
+                    Salvar chave RSA
+                  </>
+                )}
+              </Button>
+              <Button variant="outline" onClick={() => setRsaKey("")} disabled={savingRsaKey} className="gap-2">
+                <X className="h-4 w-4" />
+                Limpar
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="flex items-center gap-4">
           <span className="text-sm text-muted-foreground">Dispositivo para descoberta:</span>

@@ -1,25 +1,5 @@
 #!/usr/bin/env node
-import dotenv from 'dotenv';
-import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const candidates = [
-  path.resolve(__dirname, '..', '..'),
-  path.resolve(__dirname, '..'),
-  '/opt/netbox-ops-center',
-  '/opt/11-Netbox_ops_center',
-];
-function resolveProjectRoot() {
-  for (const candidate of candidates) {
-    const schemaPath = path.resolve(candidate, 'server/prisma/schema.prisma');
-    if (fs.existsSync(schemaPath)) return candidate;
-  }
-  return path.resolve(__dirname, '..', '..');
-}
-const projectRoot = resolveProjectRoot();
-dotenv.config({ path: path.resolve(projectRoot, '.env') });
-dotenv.config({ path: path.resolve(projectRoot, 'server/.env') });
+import '../src/env.js';
 if (!process.env.DATABASE_URL) {
   console.warn('[WIZARD][WARN] DATABASE_URL não definido. Usando Postgres local padrão.');
   process.env.DATABASE_URL = 'postgresql://netbox_ops:netbox_ops@localhost:5432/netbox_ops';

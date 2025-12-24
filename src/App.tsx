@@ -9,7 +9,6 @@ import Dashboard from "./pages/Dashboard";
 import Devices from "./pages/Devices";
 import BgpPeers from "./pages/BgpPeers";
 import Applications from "./pages/Applications";
-import JumpserverSync from "./pages/JumpserverSync";
 import Backup from "./pages/Backup";
 import Maintenance from "./pages/Maintenance";
 import Users from "./pages/Users";
@@ -45,7 +44,6 @@ const App = () => (
             <Route path="/devices" element={<RequireAuth><Devices /></RequireAuth>} />
             <Route path="/bgp-peers" element={<RequireAuth><BgpPeers /></RequireAuth>} />
             <Route path="/applications" element={<RequireAuth><Applications /></RequireAuth>} />
-            <Route path="/jumpserver-sync" element={<RequireAuth><JumpserverSync /></RequireAuth>} />
             <Route path="/backup" element={<RequireAuth><Backup /></RequireAuth>} />
             <Route path="/maintenance" element={<RequireAuth><Maintenance /></RequireAuth>} />
             <Route path="/access/terminal" element={<RequireAuth><RemoteAccess /></RequireAuth>} />

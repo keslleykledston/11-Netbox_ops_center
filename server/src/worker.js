@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import { startQueueWorkers, stopQueueWorkers } from "./queues/workers.js";
 import { closeQueues } from "./queues/index.js";
 

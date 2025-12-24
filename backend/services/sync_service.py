@@ -248,6 +248,7 @@ class SyncService:
                         report.append({
                             "id": f"synced-{m_id}",
                             "status": "synced",
+                            "type": "synced",
                             "client_name": name,
                             "cnpj": cnpj or "N/A",
                             "movidesk_id": m_id,

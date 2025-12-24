@@ -16,10 +16,10 @@ class Settings(BaseSettings):
     NETBOX_TENANT_GROUP_FILTER: str = "K3G Solutions"
     
     # Jumpserver
-    JUMPSERVER_URL: Optional[str] = "https://js.k3gsolutions.com.br"
+    JUMPSERVER_URL: Optional[str] = None
     JUMPSERVER_TOKEN: Optional[str] = None
-    JUMPSERVER_USERNAME: Optional[str] = "k3g_ia"
-    JUMPSERVER_PASSWORD: Optional[str] = "8png1X^2DN5k"
+    JUMPSERVER_USERNAME: Optional[str] = None
+    JUMPSERVER_PASSWORD: Optional[str] = None
 
 
     
@@ -31,12 +31,14 @@ class Settings(BaseSettings):
     MOVIDESK_TOKEN: Optional[str] = None
     MOVIDESK_SYNC_INTERVAL: int = 600  # 10 minutes
     MOVIDESK_SYNC_ENABLED: bool = True
+    MOVIDESK_WEBHOOK_AUTO_CREATE: bool = os.getenv("MOVIDESK_WEBHOOK_AUTO_CREATE", "false").lower() == "true"
     
     # Cache settings
     CACHE_TTL: int = 300  # 5 minutes
+    HUB_SNAPSHOT_TTL: int = 600  # 10 minutes
     
     model_config = SettingsConfigDict(
-        env_file=(".env", "server/.env"), 
+        env_file=(".env", ".env.local"),
         extra="ignore"
     )
 

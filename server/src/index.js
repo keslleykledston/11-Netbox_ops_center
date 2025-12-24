@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./env.js";
 import express from "express";
 import expressWs from "express-ws";
 import cors from "cors";
@@ -6,13 +6,14 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 import os from "node:os";
-import { getNetboxCatalog } from "./netbox.js";
+import { getNetboxCatalog, syncSingleDeviceFromNetbox } from "./netbox.js";
 import { encryptSecret, decryptSecret } from "./cred.js";
 import { fetchOxidizedNodes, fetchOxidizedVersions, syncRouterDb, getManagedRouterEntries, getRouterDbStatus, getOxidizedDiff, getOxidizedContent, getLatestOxidizedVersionTimes } from "./modules/monitor/oxidized-service.js";
 import { testJumpserverConnection, findAssetByIp, getConnectUrl } from "./jumpserver.js";
+import { getDeviceSecrets } from "./netboxSecrets.js";
 import {
   addNetboxSyncJob,
-  addJumpserverSyncJob,
+  addNetboxPendingRefreshJob,
   addOxidizedSyncJob,
   addSnmpDiscoveryJob,
   addDeviceScanJob,
@@ -25,15 +26,14 @@ import {
   closeQueues,
   getAllQueues,
   QUEUE_NAMES,
+  netboxPendingRefreshQueue,
 } from "./queues/index.js";
 import { subscribeJobEvents, unsubscribeJobEvents } from "./queues/events.js";
 import { createSshSession, listSshSessions, getSessionLog, handleSshWebsocket } from "./modules/access/ssh-service.js";
 import { JumpserverClient, createJumpserverClientFromConfig } from "./modules/access/jumpserver-client.js";
-import { fetchNetboxTenants, fetchNetboxDevices, updateNetboxDeviceCustomField } from "./modules/sync/netbox-sync-service.js";
 import { isCheckmkAvailable, getHostsStatus } from "./modules/monitor/checkmk-service.js";
 import { getMetrics, httpMetricsMiddleware, startMetricsCollection } from "./modules/observability/metrics.js";
 import { createSafeLogger } from "./modules/observability/log-sanitizer.js";
-import { extractDeviceIp } from "./utils/device-matcher.js";
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -57,96 +57,538 @@ const DEFAULT_ADMIN_EMAIL = process.env.DEFAULT_ADMIN_EMAIL || 'suporte@suporte.
 const DEFAULT_ADMIN_USERNAME = process.env.DEFAULT_ADMIN_USERNAME || 'admin';
 const DEFAULT_ADMIN_PASSWORD = process.env.DEFAULT_ADMIN_PASSWORD || 'Ops_pass_';
 const NETBOX_TENANT_GROUP_FILTER = process.env.NETBOX_TENANT_GROUP_FILTER || 'K3G Solutions';
-const NETBOX_JUMPSERVER_ID_FIELD = process.env.NETBOX_JUMPSERVER_ID_FIELD || 'jumpserver_asset_id';
-const JUMPSERVER_BATCH_SIZE = Number(process.env.JUMPSERVER_BATCH_SIZE || 50);
-const JUMPSERVER_FUZZY_THRESHOLD = Number(process.env.JUMPSERVER_FUZZY_THRESHOLD || 0.7);
 
-function splitIntoBatches(list, batchSize) {
-  const batches = [];
-  for (let i = 0; i < list.length; i += batchSize) {
-    batches.push(list.slice(i, i + batchSize));
+const NETBOX_JUMPSERVER_FIELD_DEFAULT = process.env.NETBOX_JUMPSERVER_ID_FIELD || null;
+const NETBOX_PENDING_REFRESH_INTERVAL_MS = (() => {
+  const rawMs = Number(process.env.NETBOX_PENDING_REFRESH_INTERVAL_MS);
+  if (Number.isFinite(rawMs) && rawMs > 0) return rawMs;
+  const rawSeconds = Number(process.env.NETBOX_PENDING_REFRESH_INTERVAL_SECONDS);
+  if (Number.isFinite(rawSeconds) && rawSeconds > 0) return rawSeconds * 1000;
+  return 10 * 60 * 1000;
+})();
+
+const normalizeFieldKey = (key) => String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const jumpserverFieldCandidates = new Set([
+  'id do dispositivo no jumpserver',
+  'id do jumpserver',
+  'jumpserver id',
+  'jumpserver_id',
+  'jumpserver asset id',
+  'jumpserver_asset_id',
+  'js device id',
+  'js_device_id',
+].map(normalizeFieldKey));
+
+function resolveJumpserverFieldKey(customFields = {}) {
+  const keys = Object.keys(customFields || {});
+  if (NETBOX_JUMPSERVER_FIELD_DEFAULT && keys.includes(NETBOX_JUMPSERVER_FIELD_DEFAULT)) {
+    return NETBOX_JUMPSERVER_FIELD_DEFAULT;
   }
-  return batches;
+  for (const key of keys) {
+    if (jumpserverFieldCandidates.has(normalizeFieldKey(key))) return key;
+  }
+  return null;
 }
 
-async function resolveNetboxConfig({ url, token }) {
-  let resolvedUrl = url || process.env.NETBOX_URL || null;
-  let resolvedToken = token || process.env.NETBOX_TOKEN || null;
-
-  if (!resolvedUrl || !resolvedToken) {
-    const app = await prisma.application.findFirst({
-      where: {
-        name: { contains: 'NetBox' },
+async function fetchNetboxDeviceCustomFields({ url, token, deviceId }) {
+  if (!url || !token || !deviceId) return {};
+  const baseUrl = String(url || '').replace(/\/$/, '');
+  try {
+    const res = await fetch(`${baseUrl}/api/dcim/devices/${deviceId}/`, {
+      headers: {
+        Authorization: `Token ${token}`,
+        Accept: 'application/json',
       },
     });
-    if (app) {
-      resolvedUrl = resolvedUrl || app.url;
-      resolvedToken = resolvedToken || app.apiKey;
+    if (!res.ok) return {};
+    const data = await res.json();
+    return data?.custom_fields || {};
+  } catch {
+    return {};
+  }
+}
+
+async function fetchNetboxJumpserverFieldKey({ url, token }) {
+  if (!url || !token) return null;
+  const baseUrl = String(url || '').replace(/\/$/, '');
+  let nextUrl = `${baseUrl}/api/extras/custom-fields/?limit=200`;
+  const results = [];
+
+  while (nextUrl) {
+    const res = await fetch(nextUrl, {
+      headers: {
+        Authorization: `Token ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) break;
+    const data = await res.json();
+    if (Array.isArray(data?.results)) results.push(...data.results);
+    nextUrl = data?.next || null;
+    if (nextUrl && baseUrl.startsWith('https://') && nextUrl.startsWith('http://')) {
+      nextUrl = nextUrl.replace('http://', 'https://');
     }
   }
 
-  return resolvedUrl && resolvedToken ? { url: resolvedUrl, token: resolvedToken } : null;
+  const isDeviceField = (field) => {
+    const types = field?.content_types || [];
+    return types.some((ct) => {
+      if (!ct) return false;
+      if (typeof ct === 'string') return ct === 'dcim.device' || ct.endsWith('.device');
+      if (ct.app_label && ct.model) return `${ct.app_label}.${ct.model}` === 'dcim.device';
+      if (ct.content_type) return String(ct.content_type) === 'dcim.device';
+      return false;
+    });
+  };
+
+  const matchField = (field) => {
+    const nameKey = normalizeFieldKey(field?.name);
+    const labelKey = normalizeFieldKey(field?.label || field?.display || '');
+    if (jumpserverFieldCandidates.has(nameKey)) return true;
+    if (jumpserverFieldCandidates.has(labelKey)) return true;
+    const nameText = String(field?.name || '').toLowerCase();
+    const labelText = String(field?.label || field?.display || '').toLowerCase();
+    return nameText.includes('jumpserver') || labelText.includes('jumpserver');
+  };
+
+  const candidates = results.filter((f) => isDeviceField(f) && matchField(f));
+  if (candidates.length === 0) return null;
+  return candidates[0].name || null;
 }
 
-async function resolveJumpserverConfig({ tenantId, url, apiKey, organizationId } = {}) {
-  if (url && apiKey) {
-    return {
-      url,
-      apiKey,
-      organizationId: organizationId || null,
-    };
-  }
-
+async function resolveNetboxConfigForTenant(tenantId) {
+  let app = null;
   if (tenantId) {
-    const app = await prisma.application.findFirst({
-      where: {
-        tenantId,
-        name: { contains: 'jumpserver', mode: 'insensitive' },
-      },
+    app = await prisma.application.findFirst({
+      where: { tenantId, name: { contains: 'netbox', mode: 'insensitive' } },
+      orderBy: { updatedAt: 'desc' },
     });
-    if (app) {
-      let parsedConfig = {};
-      if (app.config) {
-        try {
-          parsedConfig = JSON.parse(app.config);
-        } catch { }
-      }
-      return {
-        url: app.url,
-        apiKey: app.apiKey,
-        organizationId: parsedConfig.organizationId || null,
-      };
-    }
+  }
+  if (!app) {
+    app = await prisma.application.findFirst({
+      where: { name: { contains: 'netbox', mode: 'insensitive' } },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+  const url = app?.url || process.env.NETBOX_URL || null;
+  const token = app?.apiKey || process.env.NETBOX_TOKEN || null;
+  return url && token ? { url, token } : null;
+}
+
+async function resolveNetboxAppForTenant(tenantId, urlOverride = null) {
+  let app = null;
+  if (tenantId) {
+    app = await prisma.application.findFirst({
+      where: { tenantId, name: { contains: 'netbox', mode: 'insensitive' } },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+  if (!app && urlOverride) {
+    app = await prisma.application.findFirst({ where: { url: urlOverride } });
+  }
+  if (!app) {
+    app = await prisma.application.findFirst({
+      where: { name: { contains: 'netbox', mode: 'insensitive' } },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+  return app || null;
+}
+
+async function resolveNetboxDeviceIdFromApi({ url, token, name, ip }) {
+  if (!url || !token) return null;
+  const baseUrl = String(url || '').replace(/\/$/, '');
+  const headers = {
+    Authorization: `Token ${token}`,
+    Accept: 'application/json',
+  };
+
+  const tryDeviceQuery = async (query) => {
+    const res = await fetch(`${baseUrl}/api/dcim/devices/?${query}`, { headers });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const result = Array.isArray(data?.results) ? data.results[0] : null;
+    return result?.id || null;
+  };
+
+  if (name) {
+    const exact = await tryDeviceQuery(`name=${encodeURIComponent(name)}&limit=1`);
+    if (exact) return { id: exact, source: 'name' };
+    const search = await tryDeviceQuery(`q=${encodeURIComponent(name)}&limit=1`);
+    if (search) return { id: search, source: 'search' };
   }
 
-  const fallbackApp = await prisma.application.findFirst({
-    where: {
-      name: { contains: 'jumpserver', mode: 'insensitive' },
-    },
-  });
-  if (fallbackApp) {
-    let parsedConfig = {};
-    if (fallbackApp.config) {
-      try {
-        parsedConfig = JSON.parse(fallbackApp.config);
-      } catch { }
-    }
-    return {
-      url: fallbackApp.url,
-      apiKey: fallbackApp.apiKey,
-      organizationId: parsedConfig.organizationId || null,
-    };
-  }
+  if (ip) {
+    const primary4 = await tryDeviceQuery(`primary_ip4=${encodeURIComponent(ip)}&limit=1`);
+    if (primary4) return { id: primary4, source: 'primary_ip4' };
+    const primary6 = await tryDeviceQuery(`primary_ip6=${encodeURIComponent(ip)}&limit=1`);
+    if (primary6) return { id: primary6, source: 'primary_ip6' };
 
-  if (process.env.JUMPSERVER_URL && (process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY)) {
-    return {
-      url: process.env.JUMPSERVER_URL,
-      apiKey: process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY,
-      organizationId: process.env.JUMPSERVER_ORG_ID || null,
-    };
+    const res = await fetch(`${baseUrl}/api/ipam/ip-addresses/?address=${encodeURIComponent(ip)}&limit=1`, { headers });
+    if (res.ok) {
+      const data = await res.json();
+      const addr = Array.isArray(data?.results) ? data.results[0] : null;
+      const assigned = addr?.assigned_object || null;
+      const deviceId = assigned?.device?.id || assigned?.device_id || null;
+      if (deviceId) return { id: deviceId, source: 'ipam' };
+    }
   }
 
   return null;
+}
+
+async function fetchNetboxDeviceById({ url, token, deviceId }) {
+  if (!url || !token || !deviceId) return null;
+  const baseUrl = String(url || '').replace(/\/$/, '');
+  const res = await fetch(`${baseUrl}/api/dcim/devices/${deviceId}/`, {
+    headers: {
+      Authorization: `Token ${token}`,
+      Accept: 'application/json',
+    },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function fetchNetboxServicesForDevice({ url, token, deviceId }) {
+  const services = [];
+  if (!url || !token || !deviceId) return services;
+  let nextUrl = `${String(url).replace(/\/$/, '')}/api/ipam/services/?limit=200&device_id=${deviceId}`;
+  while (nextUrl) {
+    const res = await fetch(nextUrl, {
+      headers: {
+        Authorization: `Token ${token}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) break;
+    const data = await res.json();
+    if (Array.isArray(data?.results)) services.push(...data.results);
+    nextUrl = data?.next || null;
+    if (nextUrl && url.startsWith('https://') && nextUrl.startsWith('http://')) {
+      nextUrl = nextUrl.replace('http://', 'https://');
+    }
+  }
+  return services;
+}
+
+async function updateNetboxDeviceCustomField({ url, token, deviceId, fieldKey, value }) {
+  const baseUrl = String(url || '').replace(/\/$/, '');
+  const res = await fetch(`${baseUrl}/api/dcim/devices/${deviceId}/`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Token ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({ custom_fields: { [fieldKey]: value } }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`NetBox update failed (${res.status}): ${body}`);
+  }
+  return res.json();
+}
+
+async function listJumpserverNodes(client) {
+  const nodes = [];
+  let nextPath = '/api/v1/assets/nodes/?limit=200';
+  while (nextPath) {
+    const data = await client.request(nextPath);
+    if (Array.isArray(data)) {
+      nodes.push(...data);
+      break;
+    }
+    const page = data?.results || data?.data || [];
+    if (Array.isArray(page)) nodes.push(...page);
+    const nextUrl = data?.next || null;
+    if (!nextUrl) break;
+    if (nextUrl.startsWith(client.baseUrl)) {
+      nextPath = nextUrl.slice(client.baseUrl.length);
+    } else if (nextUrl.startsWith('/')) {
+      nextPath = nextUrl;
+    } else {
+      break;
+    }
+  }
+  return nodes;
+}
+
+function normalizeJumpserverPath(path) {
+  const parts = String(path || '')
+    .split('/')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return `/${parts.join('/')}`;
+}
+
+async function createJumpserverNode(client, parentId, name) {
+  const created = await client.request(`/api/v1/assets/nodes/${parentId}/children/`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  const childId = created?.id || created?.pk || created?.uuid || null;
+  if (!childId) return null;
+  const renamed = await client.request(`/api/v1/assets/nodes/${childId}/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ value: name }),
+  });
+  return renamed?.id ? renamed : { ...renamed, id: childId };
+}
+
+async function ensureJumpserverNodePath(client, path) {
+  const normalizedPath = normalizeJumpserverPath(path);
+  const parts = normalizedPath.split('/').filter(Boolean);
+  let nodes = await listJumpserverNodes(client);
+  if (!nodes.length) return null;
+
+  const buildMaps = () => {
+    const byFullLower = new Map();
+    for (const node of nodes) {
+      const fullValue = normalizeJumpserverPath(node?.full_value || node?.fullValue || '');
+      if (fullValue) byFullLower.set(fullValue.toLowerCase(), node);
+    }
+    return { byFullLower };
+  };
+
+  let { byFullLower } = buildMaps();
+  let currentParentId = null;
+  let currentPath = '';
+
+  for (const part of parts) {
+    const expectedPath = normalizeJumpserverPath(`${currentPath}/${part}`);
+    const existing = byFullLower.get(expectedPath.toLowerCase());
+    if (existing) {
+      currentParentId = existing.id || existing.pk || existing.uuid || null;
+      currentPath = normalizeJumpserverPath(existing.full_value || existing.fullValue || expectedPath);
+      continue;
+    }
+    if (!currentParentId) return null;
+    const created = await createJumpserverNode(client, currentParentId, part);
+    if (!created) return null;
+    currentParentId = created.id || created.pk || created.uuid || null;
+    currentPath = normalizeJumpserverPath(created.full_value || created.fullValue || expectedPath);
+    nodes = await listJumpserverNodes(client);
+    ({ byFullLower } = buildMaps());
+  }
+
+  return currentParentId;
+}
+
+function extractJumpserverNodeIds(nodes) {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node) => {
+    if (node === null || node === undefined) return null;
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (typeof node === 'object') return node.id || node.pk || node.uuid || null;
+    return null;
+  }).filter(Boolean).map((id) => String(id));
+}
+
+function matchesAssetIp(asset, ip) {
+  if (!asset || !ip) return false;
+  const target = String(ip).trim();
+  const assetIp = asset.ip ? String(asset.ip).trim() : null;
+  const assetAddr = asset.address ? String(asset.address).trim() : null;
+  return assetIp === target || assetAddr === target;
+}
+
+function matchesAssetName(asset, name) {
+  if (!asset || !name) return false;
+  const target = String(name).trim().toLowerCase();
+  const assetName = String(asset.name || '').trim().toLowerCase();
+  const assetHost = String(asset.hostname || '').trim().toLowerCase();
+  return (assetName && assetName === target) || (assetHost && assetHost === target);
+}
+
+function extractJumpserverNodePath(asset, fallback) {
+  if (!asset) return fallback || null;
+  const nodesDisplay = asset.nodes_display || asset.nodesDisplay;
+  if (Array.isArray(nodesDisplay) && nodesDisplay.length) {
+    return nodesDisplay.map((node) => String(node).trim()).filter(Boolean).join(', ');
+  }
+  if (typeof nodesDisplay === 'string' && nodesDisplay.trim()) {
+    return nodesDisplay.trim();
+  }
+  if (Array.isArray(asset.nodes) && asset.nodes.length) {
+    const paths = asset.nodes.map((node) => {
+      if (!node) return null;
+      if (typeof node === 'string' || typeof node === 'number') return String(node);
+      return node.full_value || node.fullValue || node.path || node.name || node.id || null;
+    }).filter(Boolean);
+    if (paths.length) return paths.join(', ');
+  }
+  return fallback || null;
+}
+
+function extractJumpserverPlatform(asset) {
+  if (!asset) return null;
+  let platform = asset.platform || asset.platform_name || asset.platformName || null;
+  if (platform && typeof platform === 'object') {
+    platform = platform.value || platform.slug || platform.name || platform.id || platform.pk || null;
+  }
+  return platform ? String(platform) : null;
+}
+
+async function upsertJumpserverAssetSnapshot(prisma, asset, { ipAddress, nodePath } = {}) {
+  if (!asset) return;
+  const jumpserverId = asset.id || asset.asset_id || asset.assetId;
+  if (!jumpserverId) return;
+
+  const assetId = asset.asset_id || asset.assetId || asset.id || null;
+  const hostId = asset.host_id || asset.hostId || null;
+  const resolvedIp = asset.ip || asset.address || ipAddress || null;
+  const resolvedNodePath = extractJumpserverNodePath(asset, nodePath);
+  const platform = extractJumpserverPlatform(asset);
+  const payload = {
+    jumpserverId: String(jumpserverId),
+    name: asset.name || null,
+    hostname: asset.hostname || null,
+    ipAddress: resolvedIp ? String(resolvedIp) : null,
+    assetId: assetId ? String(assetId) : null,
+    hostId: hostId ? String(hostId) : null,
+    nodePath: resolvedNodePath,
+    platform,
+    rawData: JSON.stringify(asset),
+    lastSeenAt: new Date(),
+  };
+
+  await prisma.jumpserverAssetSnapshot.upsert({
+    where: { jumpserverId: payload.jumpserverId },
+    create: payload,
+    update: payload,
+  });
+}
+
+function resolveJumpserverAssetType({ device, snapshot, override }) {
+  if (override) {
+    const normalized = String(override).trim().toLowerCase();
+    if (normalized.includes('virtual') || normalized.includes('vm') || normalized.includes('host')) return 'hosts';
+    if (normalized.includes('device')) return 'devices';
+  }
+
+  let raw = null;
+  if (snapshot?.rawData) {
+    try {
+      raw = JSON.parse(snapshot.rawData);
+    } catch { }
+  }
+
+  const customFields = raw?.custom_fields || {};
+  const typeCandidate = customFields.jumpserver_asset_type
+    || customFields.jumpserver_type
+    || customFields.asset_type
+    || customFields.tipo
+    || raw?.asset_type
+    || raw?.object_type
+    || raw?.type
+    || null;
+
+  if (typeCandidate) {
+    const normalized = String(typeCandidate).toLowerCase();
+    if (normalized.includes('virtual') || normalized.includes('vm') || normalized.includes('host')) return 'hosts';
+    if (normalized.includes('device')) return 'devices';
+  }
+
+  if (raw) {
+    const hasDeviceType = !!raw.device_type;
+    const hasCluster = !!raw.cluster;
+    if (!hasDeviceType && hasCluster) return 'hosts';
+    if (hasDeviceType) return 'devices';
+  }
+
+  const hints = [
+    device?.deviceType,
+    device?.model,
+    device?.platform,
+  ].filter(Boolean).join(' ');
+
+  if (/virtual|vm|kvm|esxi|vmware|hyperv/i.test(hints)) return 'hosts';
+  return 'devices';
+}
+
+function normalizePlatformName(name) {
+  return String(name || '').trim().toLowerCase();
+}
+
+function isGenericPlatform(name) {
+  if (!name) return true;
+  return /generic|unknown|default|netbox|none|n\/a/i.test(name);
+}
+
+function resolveNetboxPlatformCandidate({ device, snapshot, rawDevice }) {
+  let raw = rawDevice;
+  if (!raw && snapshot?.rawData) {
+    try {
+      raw = JSON.parse(snapshot.rawData);
+    } catch { }
+  }
+
+  const manufacturer = raw?.device_type?.manufacturer?.name || raw?.device_type?.manufacturer?.display || null;
+  const deviceType = raw?.device_type?.model || raw?.device_type?.display || null;
+  const platform = raw?.platform?.name || raw?.platform?.slug || null;
+  const fallback = device?.manufacturer || device?.platform || device?.model || null;
+
+  return manufacturer || deviceType || platform || fallback || null;
+}
+
+async function fetchJumpserverPlatforms(client) {
+  try {
+    const data = await client.request('/api/v1/assets/platforms/?limit=200');
+    if (Array.isArray(data)) return data;
+    return data?.results || data?.data || [];
+  } catch {
+    return [];
+  }
+}
+
+async function resolveJumpserverPlatform(client, candidate, fallback = 'Cisco') {
+  const platforms = await fetchJumpserverPlatforms(client);
+  if (!Array.isArray(platforms) || platforms.length === 0) {
+    return { value: normalizePlatformName(candidate) || normalizePlatformName(fallback) || 'cisco' };
+  }
+
+  const normalizedCandidate = normalizePlatformName(candidate);
+  const normalizedFallback = normalizePlatformName(fallback);
+  const matchByName = (value) => {
+    if (!value) return null;
+    return platforms.find((p) => {
+      const name = normalizePlatformName(p?.name || p?.value || p?.label || '');
+      const slug = normalizePlatformName(p?.slug || '');
+      return name === value || slug === value;
+    }) || null;
+  };
+
+  let match = matchByName(normalizedCandidate) || matchByName(normalizedFallback);
+  if (!match) {
+    match = platforms.find((p) => normalizePlatformName(p?.name || '') === 'cisco') || platforms[0];
+  }
+  const value = match?.id || match?.pk || match?.uuid || match?.name || match?.value || match?.slug || null;
+  return { value, name: match?.name || match?.value || null };
+}
+
+async function findJumpserverAssetByIp(client, ip) {
+  if (!ip) return null;
+  const data = await client.request(`/api/v1/assets/assets/?ip=${encodeURIComponent(ip)}`);
+  const results = Array.isArray(data) ? data : (data?.results || data?.data || []);
+  if (Array.isArray(results)) {
+    const match = results.find((asset) => matchesAssetIp(asset, ip));
+    if (match) return match;
+  }
+  const search = await client.request(`/api/v1/assets/assets/?search=${encodeURIComponent(ip)}`);
+  const searchResults = Array.isArray(search) ? search : (search?.results || search?.data || []);
+  if (Array.isArray(searchResults)) {
+    return searchResults.find((asset) => matchesAssetIp(asset, ip)) || null;
+  }
+  return null;
+}
+
+async function findJumpserverAssetByName(client, name) {
+  if (!name) return null;
+  const data = await client.request(`/api/v1/assets/assets/?search=${encodeURIComponent(name)}`);
+  const results = Array.isArray(data) ? data : (data?.results || data?.data || []);
+  if (!Array.isArray(results)) return null;
+  return results.find((asset) => matchesAssetName(asset, name)) || null;
 }
 
 // Simple startup validation and summary
@@ -271,12 +713,54 @@ async function refreshAsnRegistryFromPeers() {
   }
 }
 
+let pendingRefreshTimer = null;
+async function enqueueNetboxPendingRefresh() {
+  if (!NETBOX_PENDING_REFRESH_INTERVAL_MS || NETBOX_PENDING_REFRESH_INTERVAL_MS <= 0) return;
+  try {
+    const counts = await netboxPendingRefreshQueue.getJobCounts('waiting', 'active');
+    const pendingCount = (counts.waiting || 0) + (counts.active || 0);
+    if (pendingCount > 0) return;
+
+    const app = await prisma.application.findFirst({
+      where: { name: { contains: 'NetBox' } },
+    });
+    let defaultCredentials = {};
+    if (app?.config) {
+      try {
+        const cfg = JSON.parse(app.config);
+        defaultCredentials = { username: cfg.username, password: cfg.password };
+      } catch { }
+    }
+    const url = app?.url || process.env.NETBOX_URL;
+    const token = app?.apiKey || process.env.NETBOX_TOKEN;
+    if (!url || !token) return;
+    await addNetboxPendingRefreshJob({
+      url,
+      token,
+      defaultCredentials,
+      limit: Number(process.env.NETBOX_PENDING_REFRESH_LIMIT) || 50,
+    });
+  } catch (err) {
+    console.warn('[NetBox][WARN] Failed to enqueue pending refresh job:', err?.message || err);
+  }
+}
+
+function startNetboxPendingScheduler() {
+  if (pendingRefreshTimer || !NETBOX_PENDING_REFRESH_INTERVAL_MS || NETBOX_PENDING_REFRESH_INTERVAL_MS <= 0) return;
+  enqueueNetboxPendingRefresh();
+  pendingRefreshTimer = setInterval(() => {
+    enqueueNetboxPendingRefresh();
+  }, NETBOX_PENDING_REFRESH_INTERVAL_MS);
+  console.log(`[NETBOX] Pending refresh scheduler ativo (${NETBOX_PENDING_REFRESH_INTERVAL_MS}ms).`);
+}
+
 async function bootstrapBackground() {
   await ensureDefaultTenant();
   await ensureDefaultAdminUser();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
+  startNetboxPendingScheduler();
 
   // Start Prometheus metrics collection (every 15s)
   const queueMap = getAllQueues();
@@ -1772,6 +2256,65 @@ app.ws('/access/sessions/:id/stream', async (ws, req) => {
   }
 });
 
+async function resolveJumpserverConfig(prisma, tenantId, payload = {}) {
+  const { url, apiKey, username, password, organizationId, appId } = payload || {};
+  let appConfig = null;
+
+  if (appId) {
+    const parsedId = Number(appId);
+    if (Number.isFinite(parsedId)) {
+      appConfig = await prisma.application.findUnique({ where: { id: parsedId } });
+    }
+  }
+
+  if (!appConfig && tenantId) {
+    appConfig = await prisma.application.findFirst({
+      where: {
+        tenantId,
+        name: { contains: 'jumpserver', mode: 'insensitive' },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  if (!appConfig && !tenantId) {
+    appConfig = await prisma.application.findFirst({
+      where: {
+        name: { contains: 'jumpserver', mode: 'insensitive' },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+  }
+
+  let parsedConfig = {};
+  if (appConfig?.config) {
+    try {
+      parsedConfig = JSON.parse(appConfig.config);
+    } catch { }
+  }
+
+  const resolvedUrl = typeof url === 'string' && url.trim() ? url.trim() : (appConfig?.url || '');
+  const resolvedApiKey = typeof apiKey === 'string' && apiKey.trim() ? apiKey.trim() : (appConfig?.apiKey || null);
+  const resolvedUsername = typeof username === 'string' && username.trim()
+    ? username.trim()
+    : (parsedConfig.username || null);
+  const resolvedPassword = typeof password === 'string' && password.trim()
+    ? password
+    : (parsedConfig.password || null);
+  const resolvedOrgId = typeof organizationId === 'string' && organizationId.trim()
+    ? organizationId.trim()
+    : (parsedConfig.organizationId || null);
+
+  return {
+    url: resolvedUrl,
+    apiKey: resolvedApiKey,
+    username: resolvedUsername,
+    password: resolvedPassword,
+    organizationId: resolvedOrgId,
+    appConfig,
+  };
+}
+
 // Jumpserver endpoints
 // Get Jumpserver configuration (only if application is registered)
 app.get('/access/jumpserver/config', requireAuth, async (req, res) => {
@@ -1920,46 +2463,568 @@ app.get('/access/jumpserver/sessions/:sessionId/replay', requireAuth, async (req
   }
 });
 
-// Sync devices with Jumpserver assets (batch update jumpserverAssetId)
-app.post('/access/jumpserver/sync-devices', requireAuth, async (req, res) => {
-  try {
-    const tenantId = req.user.role === 'admin' && req.body.tenantId
-      ? Number(req.body.tenantId)
-      : (req.user.tenantId || null);
+function throwHttpError(status, message, extra = null) {
+  const err = new Error(message);
+  err.status = status;
+  if (extra) err.extra = extra;
+  throw err;
+}
 
-    if (!tenantId) {
-      return res.status(400).json({ error: 'Tenant ID obrigatório' });
+async function syncJumpserverDeviceCore({ payload, user }) {
+  const {
+    deviceId,
+    netboxId,
+    tenantName: tenantNameOverride,
+    deviceName: deviceNameOverride,
+    ipAddress: ipOverride,
+    confirm,
+  } = payload || {};
+
+  if (!confirm) {
+    throwHttpError(400, 'Confirmacao obrigatoria para sincronizar.');
+  }
+
+  let device = null;
+  let tenant = null;
+  let tenantName = tenantNameOverride || null;
+  let snapshot = null;
+  let netboxDeviceId = netboxId ? Number(netboxId) : null;
+  let netboxConfig = null;
+  let importedFromNetbox = false;
+
+  if (deviceId) {
+    device = await prisma.device.findUnique({ where: { id: Number(deviceId) } });
+    if (device) {
+      tenant = await prisma.tenant.findUnique({ where: { id: device.tenantId } });
+      tenantName = tenant?.name || tenantName;
+    }
+  }
+
+  if (!device && netboxDeviceId) {
+    snapshot = await prisma.netboxDeviceSnapshot.findUnique({ where: { netboxId: netboxDeviceId } });
+    if (snapshot?.tenantNetboxId) {
+      const tenantSnap = await prisma.netboxTenantSnapshot.findUnique({ where: { netboxId: snapshot.tenantNetboxId } });
+      tenantName = tenantName || tenantSnap?.name || null;
+    }
+    if (tenantName) {
+      tenant = await prisma.tenant.findFirst({ where: { name: tenantName } });
+    }
+    if (tenant) {
+      device = await prisma.device.findFirst({
+        where: {
+          tenantId: tenant.id,
+          OR: [
+            snapshot?.name ? { name: snapshot.name } : undefined,
+            snapshot?.ipAddress ? { ipAddress: snapshot.ipAddress } : undefined,
+            deviceNameOverride ? { name: deviceNameOverride } : undefined,
+            ipOverride ? { ipAddress: ipOverride } : undefined,
+          ].filter(Boolean),
+        },
+      });
+    }
+  }
+
+  if (!device && !netboxDeviceId && (deviceNameOverride || ipOverride)) {
+    netboxConfig = await resolveNetboxConfigForTenant(tenant?.id || user?.tenantId || null);
+    if (!netboxConfig) {
+      throwHttpError(404, 'NetBox nao configurado para importar o dispositivo.');
+    }
+    const resolved = await resolveNetboxDeviceIdFromApi({
+      url: netboxConfig.url,
+      token: netboxConfig.token,
+      name: deviceNameOverride,
+      ip: ipOverride,
+    });
+    if (resolved?.id) {
+      netboxDeviceId = Number(resolved.id);
+    }
+  }
+
+  if (!device && netboxDeviceId) {
+    if (!netboxConfig) {
+      netboxConfig = await resolveNetboxConfigForTenant(tenant?.id || null);
+    }
+    if (!netboxConfig) {
+      throwHttpError(404, 'NetBox nao configurado para importar o dispositivo.');
+    }
+    const netboxApp = await resolveNetboxAppForTenant(tenant?.id || null, netboxConfig.url);
+    let defaultCredentials = {};
+    if (netboxApp?.config) {
+      try {
+        const cfg = JSON.parse(netboxApp.config);
+        defaultCredentials = { username: cfg.username, password: cfg.password };
+      } catch { }
+    }
+    try {
+      const syncResult = await syncSingleDeviceFromNetbox(prisma, {
+        url: netboxConfig.url,
+        token: netboxConfig.token,
+        deviceId: netboxDeviceId,
+        defaultCredentials,
+        tenantGroupFilter: NETBOX_TENANT_GROUP_FILTER,
+      });
+      device = syncResult?.device || null;
+      if (device) importedFromNetbox = true;
+      if (device && !tenant) {
+        tenant = await prisma.tenant.findUnique({ where: { id: device.tenantId } });
+        tenantName = tenant?.name || tenantName;
+      }
+    } catch (err) {
+      throwHttpError(400, String(err?.message || err));
+    }
+  }
+
+  if (!device) {
+    throwHttpError(404, 'Dispositivo nao encontrado no banco local. Sincronize o NetBox primeiro.');
+  }
+
+  if (user?.role !== 'admin' && user?.tenantId && device.tenantId !== user.tenantId) {
+    throwHttpError(403, 'Sem permissao para este dispositivo.');
+  }
+
+  if (!tenant) {
+    tenant = await prisma.tenant.findUnique({ where: { id: device.tenantId } });
+    tenantName = tenant?.name || tenantName;
+  }
+
+  if (!tenantName) {
+    throwHttpError(400, 'Tenant nao identificado para o dispositivo.');
+  }
+
+  if (!netboxDeviceId) {
+    let tenantSnap = null;
+    if (tenantName) {
+      tenantSnap = await prisma.netboxTenantSnapshot.findFirst({ where: { name: tenantName } });
+    }
+    snapshot = await prisma.netboxDeviceSnapshot.findFirst({
+      where: {
+        name: device.name,
+        ...(tenantSnap?.netboxId ? { tenantNetboxId: tenantSnap.netboxId } : {}),
+      },
+    });
+    if (snapshot?.netboxId) {
+      netboxDeviceId = snapshot.netboxId;
+    }
+  }
+
+  if (!netboxConfig) {
+    netboxConfig = await resolveNetboxConfigForTenant(device.tenantId);
+  }
+  if (!netboxDeviceId && netboxConfig) {
+    const resolved = await resolveNetboxDeviceIdFromApi({
+      url: netboxConfig.url,
+      token: netboxConfig.token,
+      name: device.name || deviceNameOverride,
+      ip: device.ipAddress || ipOverride,
+    });
+    if (resolved?.id) {
+      netboxDeviceId = Number(resolved.id);
+    }
+  }
+
+  if (!snapshot && netboxDeviceId) {
+    snapshot = await prisma.netboxDeviceSnapshot.findUnique({ where: { netboxId: netboxDeviceId } });
+  }
+
+  const assetType = resolveJumpserverAssetType({
+    device,
+    snapshot,
+    override: payload?.assetType,
+  });
+
+  const client = await createJumpserverClientFromConfig(prisma, device.tenantId);
+  if (!client) {
+    throwHttpError(404, 'Jumpserver nao configurado para este tenant.');
+  }
+
+  const deviceLabel = device.name || deviceNameOverride || tenantName || null;
+  if (!deviceLabel) {
+    throwHttpError(400, 'Nome do dispositivo nao identificado para o node do Jumpserver.');
+  }
+  const nodePath = assetType === 'hosts'
+    ? `/DEFAULT/SERVIDORES/${tenantName}/host`
+    : `/DEFAULT/PRODUÇÃO/${tenantName}`;
+
+  const nodeId = await ensureJumpserverNodePath(client, nodePath);
+  if (!nodeId) {
+    throwHttpError(400, `Node do Jumpserver nao encontrado ou nao criado: '${nodePath}'.`);
+  }
+
+  const node = { id: nodeId };
+
+  const ipAddress = device.ipAddress || ipOverride || null;
+  if (!ipAddress) {
+    throwHttpError(400, 'IP primario nao encontrado para o dispositivo.');
+  }
+
+  let asset = await findJumpserverAssetByIp(client, ipAddress);
+  let created = false;
+  let assetDetails = null;
+  const deviceName = deviceLabel;
+
+  if (!asset && deviceName) {
+    asset = await findJumpserverAssetByName(client, deviceName);
+    if (asset && !matchesAssetIp(asset, ipAddress)) {
+      throwHttpError(409, 'Dispositivo ja existe no Jumpserver com este nome, mas IP diferente. Revisar antes de criar.', { assetId: asset.id || null });
+    }
+  }
+
+  if (asset?.id) {
+    assetDetails = await client.getAsset(asset.id);
+    const currentNodes = extractJumpserverNodeIds(assetDetails?.nodes);
+    if (!currentNodes.includes(String(node.id))) {
+      try {
+        await client.updateAsset(asset.id, { nodes: [node.id] });
+        assetDetails = await client.getAsset(asset.id);
+      } catch (err) {
+        throwHttpError(409, `Dispositivo ja existe no Jumpserver, mas esta em outro node. Falha ao mover automaticamente: ${String(err?.message || err)}`, { assetId: asset.id });
+      }
+    }
+  }
+
+  if (!asset) {
+    let username = device.credUsername || null;
+    let password = device.credPasswordEnc ? decryptSecret(device.credPasswordEnc) : null;
+    let sshPort = device.sshPort || null;
+    let telnetPort = null;
+    let serviceName = 'ssh';
+
+    if ((!username || !password || !sshPort) && netboxConfig && netboxDeviceId) {
+      const secrets = await getDeviceSecrets(netboxDeviceId, netboxConfig);
+      if (!username && secrets.username) username = secrets.username;
+      if (!password && secrets.password) password = secrets.password;
+      if (!sshPort && secrets.sshPort) sshPort = secrets.sshPort;
     }
 
-    const client = await createJumpserverClientFromConfig(prisma, tenantId);
-    if (!client) {
-      return res.status(404).json({ error: 'Jumpserver não configurado' });
+    if (netboxConfig && netboxDeviceId) {
+      const services = await fetchNetboxServicesForDevice({
+        url: netboxConfig.url,
+        token: netboxConfig.token,
+        deviceId: netboxDeviceId,
+      });
+      let foundSsh = false;
+      for (const service of services) {
+        const ports = Array.isArray(service?.ports) ? service.ports : [];
+        const protocol = String(service?.protocol?.value || '').toLowerCase();
+        const svcName = String(service?.name || '').toLowerCase();
+        for (const port of ports) {
+          if (port === 22 || (svcName.includes('ssh') && protocol === 'tcp')) {
+            sshPort = port;
+            serviceName = 'ssh';
+            foundSsh = true;
+            break;
+          }
+          if (port === 23 || (svcName.includes('telnet') && protocol === 'tcp')) {
+            telnetPort = port;
+            if (!foundSsh) {
+              serviceName = 'telnet';
+            }
+          }
+        }
+        if (foundSsh) break;
+      }
     }
 
-    // Get all assets from Jumpserver
-    const assets = await client.getAssets({ limit: 1000 });
+    if ((!username || !password) && netboxConfig) {
+      const netboxApp = await resolveNetboxAppForTenant(device.tenantId, netboxConfig.url);
+      let defaultCredentials = {};
+      if (netboxApp?.config) {
+        try {
+          const cfg = JSON.parse(netboxApp.config);
+          defaultCredentials = { username: cfg.username, password: cfg.password };
+        } catch { }
+      }
+      if (!username && defaultCredentials.username) username = defaultCredentials.username;
+      if (!password && defaultCredentials.password) password = defaultCredentials.password;
 
-    // Get all devices from this tenant
-    const devices = await prisma.device.findMany({ where: { tenantId } });
+      if ((!username || !password) && netboxDeviceId) {
+        try {
+          const refreshed = await syncSingleDeviceFromNetbox(prisma, {
+            url: netboxConfig.url,
+            token: netboxConfig.token,
+            deviceId: netboxDeviceId,
+            defaultCredentials,
+            tenantGroupFilter: NETBOX_TENANT_GROUP_FILTER,
+          });
+          if (refreshed?.device) {
+            device = refreshed.device;
+          }
+          if (!username && device?.credUsername) username = device.credUsername;
+          if (!password && device?.credPasswordEnc) password = decryptSecret(device.credPasswordEnc);
+        } catch (err) {
+          console.warn('[Jumpserver][WARN] Failed to refresh device credentials from NetBox:', err?.message || err);
+        }
+      }
+    }
 
-    // Match by IP address
-    let matchedCount = 0;
-    for (const device of devices) {
-      const asset = assets.find(a => a.ip === device.ipAddress || a.address === device.ipAddress);
-      if (asset) {
-        await prisma.device.update({
-          where: { id: device.id },
-          data: { jumpserverAssetId: asset.id },
+    if (!username || !password) {
+      throwHttpError(400, 'Credenciais SSH ausentes. Sincronize o NetBox/Secrets primeiro.');
+    }
+
+    const netboxRawDevice = netboxDeviceId && netboxConfig
+      ? await fetchNetboxDeviceById({
+        url: netboxConfig.url,
+        token: netboxConfig.token,
+        deviceId: netboxDeviceId,
+      })
+      : null;
+    const platformCandidateRaw = resolveNetboxPlatformCandidate({
+      device,
+      snapshot,
+      rawDevice: netboxRawDevice,
+    });
+    const platformCandidate = isGenericPlatform(platformCandidateRaw) ? 'Cisco' : platformCandidateRaw;
+    const resolvedPlatform = await resolveJumpserverPlatform(client, platformCandidate, 'Cisco');
+    const platformValue = resolvedPlatform?.value || 'cisco';
+
+    const protocols = [];
+    if (sshPort) {
+      protocols.push({ name: 'ssh', port: Number(sshPort) || 22, platform: platformValue });
+    } else if (telnetPort) {
+      protocols.push({ name: 'ssh', port: 22, platform: platformValue });
+    }
+    if (telnetPort) {
+      protocols.push({ name: 'telnet', port: Number(telnetPort) || 23, platform: platformValue });
+    }
+    if (!protocols.length) {
+      protocols.push({ name: serviceName || 'ssh', port: 22, platform: platformValue });
+    }
+
+    const assetPayload = {
+      name: device.name,
+      hostname: device.hostname || device.name,
+      address: ipAddress,
+      ip: ipAddress,
+      nodes: node?.id ? [node.id] : undefined,
+      platform: platformValue,
+      protocols,
+      accounts: [
+        {
+          name: username,
+          username,
+          secret_type: 'password',
+          secret: password,
+        },
+      ],
+    };
+    const payloads = [assetPayload];
+
+    asset = await client.createAsset(assetPayload, { assetType, payloads });
+    created = true;
+  }
+
+  const assetId = asset?.id ? String(asset.id) : null;
+  if (!assetId) {
+    throwHttpError(500, 'Falha ao obter ID do asset no Jumpserver.');
+  }
+
+  let defaultSystemUser = null;
+  const jsApp = await prisma.application.findFirst({ where: { tenantId: device.tenantId, name: 'Jumpserver' } });
+  if (jsApp?.config) {
+    try {
+      const cfg = JSON.parse(jsApp.config);
+      defaultSystemUser = cfg.defaultSystemUser || null;
+    } catch { }
+  }
+
+  await prisma.device.update({
+    where: { id: device.id },
+    data: {
+      jumpserverAssetId: assetId,
+      jumpserverId: assetId,
+      useJumpserver: true,
+      ...(defaultSystemUser ? { jumpserverSystemUser: String(defaultSystemUser) } : {}),
+    },
+  });
+
+  let netboxUpdate = { ok: false, field: null, error: null };
+  if (netboxConfig && netboxDeviceId) {
+    if (!snapshot) {
+      snapshot = await prisma.netboxDeviceSnapshot.findUnique({ where: { netboxId: netboxDeviceId } });
+    }
+    let customFields = {};
+    if (snapshot?.rawData) {
+      try {
+        const raw = JSON.parse(snapshot.rawData);
+        customFields = raw.custom_fields || {};
+      } catch { }
+    }
+    if (!customFields || Object.keys(customFields).length === 0) {
+      customFields = await fetchNetboxDeviceCustomFields({
+        url: netboxConfig.url,
+        token: netboxConfig.token,
+        deviceId: netboxDeviceId,
+      });
+    }
+    let fieldKey = resolveJumpserverFieldKey(customFields);
+    if (!fieldKey) {
+      fieldKey = await fetchNetboxJumpserverFieldKey(netboxConfig);
+    }
+    if (!fieldKey) {
+      netboxUpdate = { ok: false, field: null, error: 'Campo de Jumpserver nao identificado no NetBox. Verifique NETBOX_JUMPSERVER_ID_FIELD ou o custom field.' };
+    } else {
+      try {
+        await updateNetboxDeviceCustomField({
+          url: netboxConfig.url,
+          token: netboxConfig.token,
+          deviceId: netboxDeviceId,
+          fieldKey,
+          value: assetId,
         });
-        matchedCount++;
+        netboxUpdate = { ok: true, field: fieldKey, error: null };
+      } catch (err) {
+        let fallbackKey = null;
+        const errMsg = String(err?.message || err);
+        if (errMsg.includes('Unknown field name')) {
+          fallbackKey = await fetchNetboxJumpserverFieldKey(netboxConfig);
+        }
+        if (fallbackKey && fallbackKey !== fieldKey) {
+          try {
+            await updateNetboxDeviceCustomField({
+              url: netboxConfig.url,
+              token: netboxConfig.token,
+              deviceId: netboxDeviceId,
+              fieldKey: fallbackKey,
+              value: assetId,
+            });
+            netboxUpdate = { ok: true, field: fallbackKey, error: null };
+          } catch (fallbackErr) {
+            netboxUpdate = { ok: false, field: fallbackKey, error: String(fallbackErr?.message || fallbackErr) };
+          }
+        } else {
+          netboxUpdate = { ok: false, field: fieldKey, error: errMsg };
+        }
+      }
+    }
+  }
+
+  try {
+    let snapshotAsset = assetDetails || asset;
+    if ((!snapshotAsset || !snapshotAsset.id) && assetId) {
+      snapshotAsset = await client.getAsset(assetId);
+    }
+    if (snapshotAsset) {
+      await upsertJumpserverAssetSnapshot(prisma, snapshotAsset, { ipAddress, nodePath });
+    }
+  } catch (err) {
+    console.warn('[Jumpserver][WARN] Falha ao atualizar snapshot local do asset:', err?.message || err);
+  }
+
+  return {
+    ok: true,
+    created,
+    assetId,
+    deviceId: device.id,
+    netbox: netboxUpdate,
+    importedFromNetbox,
+  };
+}
+
+// Sync a single device to Jumpserver and update NetBox custom field (manual approval)
+app.post('/access/jumpserver/sync-device', requireAuth, async (req, res) => {
+  try {
+    const result = await syncJumpserverDeviceCore({ payload: req.body || {}, user: req.user });
+    res.json(result);
+  } catch (e) {
+    res.status(e?.status || 500).json({ error: String(e?.message || e), ...(e?.extra || {}) });
+  }
+});
+
+// Bulk sync devices by tenant (NetBox snapshot)
+app.post('/access/jumpserver/sync-tenant', requireAuth, async (req, res) => {
+  try {
+    const { tenantName, tenantId, limit, confirm, netboxIds } = req.body || {};
+    if (!confirm) {
+      return res.status(400).json({ error: 'Confirmacao obrigatoria para sincronizar.' });
+    }
+    const targetNetboxIds = Array.isArray(netboxIds)
+      ? netboxIds.map((value) => Number(value)).filter((value) => Number.isFinite(value))
+      : [];
+
+    let resolvedTenant = null;
+    let resolvedTenantName = tenantName ? String(tenantName) : null;
+    if (tenantId) {
+      resolvedTenant = await prisma.tenant.findUnique({ where: { id: Number(tenantId) } });
+    }
+    if (!resolvedTenant && resolvedTenantName) {
+      resolvedTenant = await prisma.tenant.findFirst({ where: { name: resolvedTenantName } });
+    }
+    if (!resolvedTenant && req.user?.tenantId) {
+      resolvedTenant = await prisma.tenant.findUnique({ where: { id: req.user.tenantId } });
+    }
+    if (resolvedTenant) {
+      resolvedTenantName = resolvedTenant.name;
+    }
+
+    if (!resolvedTenantName) {
+      return res.status(400).json({ error: 'Tenant nao identificado para sincronizacao em lote.' });
+    }
+
+    if (req.user?.role !== 'admin' && req.user?.tenantId && resolvedTenant && resolvedTenant.id !== req.user.tenantId) {
+      return res.status(403).json({ error: 'Sem permissao para este tenant.' });
+    }
+
+    const tenantSnap = await prisma.netboxTenantSnapshot.findFirst({ where: { name: resolvedTenantName } });
+    const take = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : undefined;
+
+    let devices = [];
+    if (tenantSnap?.netboxId) {
+      const where = {
+        tenantNetboxId: tenantSnap.netboxId,
+        ...(targetNetboxIds.length ? { netboxId: { in: targetNetboxIds } } : {}),
+      };
+      devices = await prisma.netboxDeviceSnapshot.findMany({
+        where,
+        orderBy: { name: 'asc' },
+        ...(take ? { take } : {}),
+      });
+    } else if (resolvedTenant) {
+      devices = await prisma.device.findMany({
+        where: { tenantId: resolvedTenant.id },
+        orderBy: { name: 'asc' },
+        ...(take ? { take } : {}),
+      });
+    }
+
+    if (!devices.length) {
+      return res.status(404).json({ error: 'Nenhum dispositivo encontrado para o tenant informado.' });
+    }
+
+    const results = [];
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (const deviceItem of devices) {
+      const isSnapshot = typeof deviceItem.netboxId === 'number';
+      const ipAddressRaw = deviceItem.ipAddress || undefined;
+      const ipAddress = typeof ipAddressRaw === 'string' ? ipAddressRaw.split('/')[0] : ipAddressRaw;
+      const snapshotNetboxId = isSnapshot ? deviceItem.netboxId : null;
+      const localDeviceId = isSnapshot ? null : deviceItem.id;
+      const payload = {
+        netboxId: snapshotNetboxId || undefined,
+        deviceId: localDeviceId || undefined,
+        tenantName: resolvedTenantName,
+        deviceName: deviceItem.name,
+        ipAddress,
+        confirm: true,
+      };
+      try {
+        const result = await syncJumpserverDeviceCore({ payload, user: req.user });
+        results.push({ status: 'success', netboxId: snapshotNetboxId, deviceId: result.deviceId || localDeviceId, name: deviceItem.name });
+        successCount += 1;
+      } catch (err) {
+        results.push({ status: 'error', netboxId: snapshotNetboxId, deviceId: localDeviceId, name: deviceItem.name, error: String(err?.message || err) });
+        errorCount += 1;
       }
     }
 
     res.json({
       ok: true,
-      matched: matchedCount,
-      totalDevices: devices.length,
-      totalAssets: assets.length,
+      tenant: resolvedTenantName,
+      total: devices.length,
+      successCount,
+      errorCount,
+      results,
     });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
@@ -1969,24 +3034,51 @@ app.post('/access/jumpserver/sync-devices', requireAuth, async (req, res) => {
 // Test Jumpserver connection
 app.post('/access/jumpserver/test', requireAuth, async (req, res) => {
   try {
-    const { url, apiKey, organizationId } = req.body || {};
+    const payload = req.body || {};
+    const tenantId = req.user.role === 'admin' && req.query.tenantId
+      ? Number(req.query.tenantId)
+      : (req.user.tenantId || null);
 
-    if (!url || !apiKey) {
-      return res.status(400).json({ error: 'URL e API Key obrigatórios' });
+    const resolved = await resolveJumpserverConfig(prisma, tenantId, payload);
+    const { url, apiKey, username, password, organizationId, appConfig } = resolved;
+
+    if (!url) {
+      return res.status(400).json({ error: 'URL obrigatória' });
+    }
+
+    if (appConfig && req.user?.tenantId && appConfig.tenantId !== req.user.tenantId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Sem permissao para este Jumpserver.' });
     }
 
     const client = new JumpserverClient({
       baseUrl: url,
-      apiToken: apiKey,
+      apiToken: apiKey || null,
+      username: username || null,
+      password: password || null,
       organizationId: organizationId || null,
     });
 
+    const shouldLogin = !!(username && password);
+    let tokenIssued = null;
+    if (shouldLogin) {
+      tokenIssued = await client.login({ force: true });
+    }
+
     const result = await client.authenticate();
+    let tokenStored = false;
+    if (payload.storeToken && tokenIssued && appConfig?.id) {
+      await prisma.application.update({
+        where: { id: appConfig.id },
+        data: { apiKey: tokenIssued },
+      });
+      tokenStored = true;
+    }
 
     res.json({
       ok: true,
       connected: true,
       user: result.user,
+      tokenStored,
     });
   } catch (e) {
     res.status(500).json({
@@ -1994,275 +3086,6 @@ app.post('/access/jumpserver/test', requireAuth, async (req, res) => {
       connected: false,
       error: String(e?.message || e),
     });
-  }
-});
-
-// Jumpserver Sync (NetBox <-> JumpServer) with pending approval
-app.post('/jumpserver/sync/start', requireAuth, async (req, res) => {
-  try {
-    const mode = req.body?.mode || 'full';
-    const filters = req.body?.filters || {};
-    const threshold = req.body?.threshold !== undefined ? Number(req.body.threshold) : JUMPSERVER_FUZZY_THRESHOLD;
-
-    const tenantId = req.user.role === 'admin' && req.body?.tenantId
-      ? Number(req.body.tenantId)
-      : (req.user.tenantId || null);
-
-    if (!tenantId) {
-      return res.status(400).json({ error: 'Tenant ID obrigatorio' });
-    }
-
-    const jumpserverConfig = await resolveJumpserverConfig({
-      tenantId,
-      url: req.body?.jumpserverUrl,
-      apiKey: req.body?.jumpserverApiKey,
-      organizationId: req.body?.jumpserverOrgId,
-    });
-    if (!jumpserverConfig) {
-      return res.status(404).json({ error: 'Jumpserver nao configurado' });
-    }
-
-    const netboxConfig = await resolveNetboxConfig({
-      url: req.body?.netboxUrl,
-      token: req.body?.netboxToken,
-    });
-    if (!netboxConfig) {
-      return res.status(400).json({ error: 'NetBox URL/Token obrigatorios' });
-    }
-
-    const [tenants, devices] = await Promise.all([
-      fetchNetboxTenants(netboxConfig.url, netboxConfig.token),
-      fetchNetboxDevices(netboxConfig.url, netboxConfig.token),
-    ]);
-
-    const allowedTenantIds = new Set(
-      tenants
-        .filter((t) => {
-          const groupName = t?.group?.name || t?.tenant_group?.name || null;
-          return !NETBOX_TENANT_GROUP_FILTER || groupName === NETBOX_TENANT_GROUP_FILTER;
-        })
-        .map((t) => t.id)
-    );
-
-    const tenantIdFilter = Array.isArray(filters.tenantIds) ? filters.tenantIds.map(Number) : null;
-    const siteIdFilter = Array.isArray(filters.siteIds) ? filters.siteIds.map(Number) : null;
-    const excludeInactive = filters.excludeInactive !== false;
-
-    let lastCompletedAt = null;
-    if (mode === 'incremental') {
-      const lastJob = await prisma.syncJob.findFirst({
-        where: { status: 'completed' },
-        orderBy: { completedAt: 'desc' },
-      });
-      lastCompletedAt = lastJob?.completedAt || null;
-    }
-
-    const filteredDevices = devices.filter((device) => {
-      if (NETBOX_TENANT_GROUP_FILTER) {
-        if (!device?.tenant?.id) return false;
-        if (!allowedTenantIds.has(device.tenant.id)) return false;
-      }
-      if (tenantIdFilter && device?.tenant?.id && !tenantIdFilter.includes(device.tenant.id)) {
-        return false;
-      }
-      if (siteIdFilter && device?.site?.id && !siteIdFilter.includes(device.site.id)) {
-        return false;
-      }
-      if (excludeInactive) {
-        const statusValue = device?.status?.value || device?.status || '';
-        if (String(statusValue).toLowerCase() !== 'active') return false;
-      }
-      if (lastCompletedAt) {
-        const updated = device?.last_updated || device?.last_updated_at || device?.modified || null;
-        if (updated && new Date(updated) <= lastCompletedAt) {
-          return false;
-        }
-      }
-      return true;
-    });
-
-    const syncJob = await prisma.syncJob.create({
-      data: {
-        status: 'running',
-        type: mode,
-        totalDevices: filteredDevices.length,
-        config: {
-          filters,
-          threshold,
-          tenantId,
-          netboxUrl: netboxConfig.url,
-        },
-      },
-    });
-
-    if (filteredDevices.length === 0) {
-      await prisma.syncJob.update({
-        where: { id: syncJob.id },
-        data: {
-          status: 'completed',
-          completedAt: new Date(),
-        },
-      });
-      return res.json({ jobId: syncJob.id, totalDevices: 0, batches: 0 });
-    }
-
-    const batches = splitIntoBatches(filteredDevices, JUMPSERVER_BATCH_SIZE);
-    for (const batch of batches) {
-      await addJumpserverSyncJob({
-        syncJobId: syncJob.id,
-        devices: batch,
-        jumpserverConfig,
-        threshold,
-      });
-    }
-
-    res.json({
-      jobId: syncJob.id,
-      totalDevices: filteredDevices.length,
-      batches: batches.length,
-    });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-app.get('/jumpserver/sync/:jobId/pending', requireAuth, async (req, res) => {
-  try {
-    const jobId = req.params.jobId;
-    const status = req.query.status ? String(req.query.status) : 'pending';
-    const where = { syncJobId: jobId, ...(status ? { status } : {}) };
-    const actions = await prisma.pendingAction.findMany({
-      where,
-      orderBy: { createdAt: 'desc' },
-    });
-    res.json({ count: actions.length, actions });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-app.post('/jumpserver/sync/pending/:actionId/approve', requireAuth, async (req, res) => {
-  try {
-    const actionId = req.params.actionId;
-    const decision = req.body?.action || 'approve';
-
-    const actionRow = await prisma.pendingAction.findUnique({ where: { id: actionId } });
-    if (!actionRow) {
-      return res.status(404).json({ error: 'Acao nao encontrada' });
-    }
-
-    if (decision === 'reject') {
-      const updated = await prisma.pendingAction.update({
-        where: { id: actionId },
-        data: {
-          status: 'rejected',
-          approvedBy: req.user?.sub ? String(req.user.sub) : null,
-          approvedAt: new Date(),
-        },
-      });
-      return res.json({ ok: true, action: updated });
-    }
-
-    const tenantId = req.user.role === 'admin' && req.body?.tenantId
-      ? Number(req.body.tenantId)
-      : (req.user.tenantId || null);
-
-    if (!tenantId) {
-      return res.status(400).json({ error: 'Tenant ID obrigatorio' });
-    }
-
-    const jumpserverConfig = await resolveJumpserverConfig({
-      tenantId,
-      url: req.body?.jumpserverUrl,
-      apiKey: req.body?.jumpserverApiKey,
-      organizationId: req.body?.jumpserverOrgId,
-    });
-    if (!jumpserverConfig) {
-      return res.status(404).json({ error: 'Jumpserver nao configurado' });
-    }
-
-    const netboxConfig = await resolveNetboxConfig({
-      url: req.body?.netboxUrl,
-      token: req.body?.netboxToken,
-    });
-    if (!netboxConfig) {
-      return res.status(400).json({ error: 'NetBox URL/Token obrigatorios' });
-    }
-
-    const jsClient = new JumpserverClient({
-      baseUrl: jumpserverConfig.url,
-      apiToken: jumpserverConfig.apiKey,
-      organizationId: jumpserverConfig.organizationId || null,
-    });
-
-    const device = actionRow.netboxData || {};
-    const deviceIp = extractDeviceIp(device);
-    const assetPayload = {
-      name: device?.name || actionRow.deviceName,
-      hostname: device?.name || undefined,
-      ...(deviceIp ? { ip: deviceIp, address: deviceIp } : {}),
-    };
-
-    let assetId = actionRow.matchedAssetId;
-    if (actionRow.action === 'create') {
-      const created = await jsClient.createAsset(assetPayload);
-      assetId = created?.id ? String(created.id) : assetId;
-    } else if (actionRow.action === 'update' && actionRow.matchedAssetId) {
-      await jsClient.updateAsset(actionRow.matchedAssetId, assetPayload);
-    }
-
-    if (device?.id && assetId) {
-      await updateNetboxDeviceCustomField(
-        netboxConfig.url,
-        netboxConfig.token,
-        device.id,
-        NETBOX_JUMPSERVER_ID_FIELD,
-        assetId,
-      );
-    }
-
-    const updated = await prisma.pendingAction.update({
-      where: { id: actionId },
-      data: {
-        status: 'approved',
-        approvedBy: req.user?.sub ? String(req.user.sub) : null,
-        approvedAt: new Date(),
-        matchedAssetId: assetId,
-      },
-    });
-
-    res.json({ ok: true, action: updated });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-app.get('/jumpserver/sync/:jobId/status', requireAuth, async (req, res) => {
-  try {
-    const jobId = req.params.jobId;
-    const job = await prisma.syncJob.findUnique({ where: { id: jobId } });
-    if (!job) {
-      return res.status(404).json({ error: 'SyncJob nao encontrado' });
-    }
-    const pendingCount = await prisma.pendingAction.count({
-      where: { syncJobId: jobId, status: 'pending' },
-    });
-    res.json({ ...job, pendingCount });
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
-  }
-});
-
-app.get('/jumpserver/sync/history', requireAuth, async (req, res) => {
-  try {
-    const limit = Number(req.query.limit || 20);
-    const jobs = await prisma.syncJob.findMany({
-      orderBy: { startedAt: 'desc' },
-      take: limit,
-    });
-    res.json(jobs);
-  } catch (e) {
-    res.status(500).json({ error: String(e?.message || e) });
   }
 });
 
@@ -2457,7 +3280,7 @@ app.get('/backup/diff', requireAuth, async (req, res) => {
 // NetBox sync
 app.post("/netbox/sync", requireAuth, async (req, res) => {
   try {
-    const { resources, url: urlOverride, token: tokenOverride, deviceFilters } = req.body || {};
+    const { resources, url: urlOverride, token: tokenOverride, deviceFilters, fullSync } = req.body || {};
 
     // Fetch Application config to get default credentials
     // We assume the URL matches the one in the DB, or we find the first NetBox app
@@ -2484,6 +3307,7 @@ app.post("/netbox/sync", requireAuth, async (req, res) => {
       token: tokenOverride || process.env.NETBOX_TOKEN,
       deviceFilters: deviceFilters || null,
       defaultCredentials,
+      fullSync: Boolean(fullSync),
     }, req.user?.sub || null, req.user?.tenantId || null);
 
     res.json({
@@ -2496,11 +3320,256 @@ app.post("/netbox/sync", requireAuth, async (req, res) => {
   }
 });
 
+// NetBox pending devices (cached sync state)
+app.get("/netbox/pending", requireAuth, async (req, res) => {
+  try {
+    const status = String(req.query.status || "pending").toLowerCase();
+    const limit = Number(req.query.limit || 200);
+    let tenantName = req.query.tenantName ? String(req.query.tenantName) : null;
+    const where = {};
+
+    if (status && status !== "all") {
+      where.status = status;
+    }
+
+    if (req.user?.role !== "admin" && req.user?.tenantId) {
+      const tenant = await prisma.tenant.findUnique({ where: { id: req.user.tenantId } });
+      if (tenant?.name) tenantName = tenant.name;
+    }
+
+    if (tenantName) {
+      where.tenantName = tenantName;
+    }
+
+    const items = await prisma.netboxPendingDevice.findMany({
+      where,
+      orderBy: { nextCheckAt: "asc" },
+      take: Number.isFinite(limit) ? Math.min(limit, 1000) : 200,
+    });
+
+    const normalized = items.map((item) => {
+      let missingFields = [];
+      if (item.missingFields) {
+        try {
+          missingFields = JSON.parse(item.missingFields);
+        } catch { }
+      }
+      return {
+        ...item,
+        missingFields,
+      };
+    });
+
+    res.json({ items: normalized, count: normalized.length });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.get("/netbox/sync-state", requireAuth, async (req, res) => {
+  try {
+    const key = String(req.query.key || "devices");
+    let tenantId = null;
+    if (req.user?.role === "admin" && req.query.tenantId) {
+      const parsed = Number(req.query.tenantId);
+      tenantId = Number.isFinite(parsed) ? parsed : null;
+    } else if (req.user?.tenantId) {
+      tenantId = req.user.tenantId;
+    }
+    const state = await prisma.netboxSyncState.findUnique({
+      where: { key_tenantId: { key, tenantId } },
+    });
+    if (!state) return res.status(404).json({ error: "Sync state nao encontrado." });
+    let metadata = null;
+    if (state.metadata) {
+      try {
+        metadata = JSON.parse(state.metadata);
+      } catch { }
+    }
+    res.json({ ...state, metadata });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+app.post("/netbox/pending/refresh", requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const tenantId = req.user?.role === "admin"
+      ? (Number(body.tenantId) || null)
+      : (req.user?.tenantId || null);
+
+    const netboxConfig = await resolveNetboxConfigForTenant(tenantId);
+    if (!netboxConfig) {
+      return res.status(404).json({ error: "NetBox nao configurado para este tenant." });
+    }
+    const app = await resolveNetboxAppForTenant(tenantId, netboxConfig.url);
+    let defaultCredentials = {};
+    if (app?.config) {
+      try {
+        const cfg = JSON.parse(app.config);
+        defaultCredentials = { username: cfg.username, password: cfg.password };
+      } catch { }
+    }
+    const limit = Number(body.limit || 50);
+    const job = await addNetboxPendingRefreshJob({
+      url: netboxConfig.url,
+      token: netboxConfig.token,
+      limit: Number.isFinite(limit) ? limit : 50,
+      defaultCredentials,
+    }, req.user?.sub || null, tenantId);
+
+    res.json({ jobId: job.id, queue: 'netbox-pending-refresh', enqueuedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// NetBox webhook (prepare for future updates)
+app.post("/webhooks/netbox", async (req, res) => {
+  try {
+    const expectedToken = process.env.NETBOX_WEBHOOK_TOKEN || null;
+    if (expectedToken) {
+      const provided = String(req.headers["x-webhook-token"] || req.headers["x-netbox-token"] || "").trim();
+      if (!provided || provided !== expectedToken) {
+        return res.status(403).json({ error: "Webhook token invalido." });
+      }
+    }
+
+    const payload = req.body || {};
+    const modelRaw = String(payload?.model || "").toLowerCase();
+    const model = modelRaw.includes("device") ? "device" : modelRaw;
+    const event = String(payload?.event || "").toLowerCase();
+    const data = payload?.data || payload?.object || null;
+
+    if (!data || (model && model !== "device")) {
+      return res.json({ ok: true, ignored: true, model, event });
+    }
+
+    if (!data?.id) {
+      return res.status(400).json({ error: "Payload sem ID do dispositivo." });
+    }
+
+    const ip = data.primary_ip?.address?.split("/")?.[0] || data.primary_ip4?.address?.split("/")?.[0] || null;
+    const tenantNetboxId = data.tenant?.id || null;
+    const tenantName = data.tenant?.name || null;
+    const siteNetboxId = data.site?.id || null;
+    const platform = data.platform?.slug || data.platform?.name || null;
+    const cf = data.custom_fields || {};
+    const credUsername = cf["username"] || cf["Username"] || data.config_context?.username || data.config_context?.user || null;
+    const credPassword = cf["password"] || cf["Password"] || data.config_context?.password || data.config_context?.pass || null;
+
+    await prisma.netboxDeviceSnapshot.upsert({
+      where: { netboxId: data.id },
+      update: {
+        name: data.name || data.display || `Device-${data.id}`,
+        ipAddress: ip || null,
+        tenantNetboxId,
+        siteNetboxId,
+        platform,
+        rawData: JSON.stringify(data),
+        lastSeenAt: new Date(),
+      },
+      create: {
+        netboxId: data.id,
+        name: data.name || data.display || `Device-${data.id}`,
+        ipAddress: ip || null,
+        tenantNetboxId,
+        siteNetboxId,
+        platform,
+        rawData: JSON.stringify(data),
+        lastSeenAt: new Date(),
+      },
+    });
+
+    const missing = [];
+    if (!ip || ip === "0.0.0.0") missing.push("ipAddress");
+    if (!credUsername) missing.push("username");
+    if (!credPassword) missing.push("password");
+
+    if (missing.length > 0) {
+      await prisma.netboxPendingDevice.upsert({
+        where: { netboxId: data.id },
+        update: {
+          tenantNetboxId,
+          tenantName,
+          deviceName: data.name || data.display || null,
+          ipAddress: ip || null,
+          missingFields: JSON.stringify(missing),
+          status: "pending",
+          nextCheckAt: new Date(Date.now() + NETBOX_PENDING_REFRESH_INTERVAL_MS),
+          lastSeenAt: new Date(),
+        },
+        create: {
+          netboxId: data.id,
+          tenantNetboxId,
+          tenantName,
+          deviceName: data.name || data.display || null,
+          ipAddress: ip || null,
+          missingFields: JSON.stringify(missing),
+          status: "pending",
+          nextCheckAt: new Date(Date.now() + NETBOX_PENDING_REFRESH_INTERVAL_MS),
+          lastSeenAt: new Date(),
+        },
+      });
+    } else {
+      await prisma.netboxPendingDevice.updateMany({
+        where: { netboxId: data.id },
+        data: {
+          status: "resolved",
+          missingFields: null,
+          lastError: null,
+          nextCheckAt: null,
+          lastSeenAt: new Date(),
+        },
+      });
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
 // Jumpserver Integration
 app.post("/jumpserver/test", requireAuth, async (req, res) => {
   try {
-    const { url, apiKey } = req.body || {};
-    if (!url || !apiKey) return res.status(400).json({ error: "URL and API Key required" });
+    const payload = req.body || {};
+    const tenantId = req.user?.tenantId || null;
+    const resolved = await resolveJumpserverConfig(prisma, tenantId, payload);
+    const { url, apiKey, username, password, organizationId, appConfig } = resolved;
+
+    if (!url) return res.status(400).json({ error: "URL obrigatoria" });
+
+    if (appConfig && req.user?.tenantId && appConfig.tenantId !== req.user.tenantId && req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Sem permissao para este Jumpserver.' });
+    }
+
+    if (username && password) {
+      const client = new JumpserverClient({
+        baseUrl: url,
+        apiToken: apiKey || null,
+        username,
+        password,
+        organizationId: organizationId || null,
+      });
+
+      const tokenIssued = await client.login({ force: true });
+      await client.authenticate();
+
+      let tokenStored = false;
+      if (payload.storeToken && tokenIssued && appConfig?.id) {
+        await prisma.application.update({
+          where: { id: appConfig.id },
+          data: { apiKey: tokenIssued },
+        });
+        tokenStored = true;
+      }
+
+      return res.json({ ok: true, tokenStored });
+    }
+
+    if (!apiKey) return res.status(400).json({ error: "URL and API Key required" });
     const result = await testJumpserverConnection(url, apiKey);
     res.json(result);
   } catch (e) {

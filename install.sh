@@ -122,22 +122,19 @@ setup_environment() {
         fi
     fi
     
-    # Check for server/.env
-    if [ ! -d server ]; then
-        mkdir -p server
-    fi
-    if [ ! -f server/.env ]; then
-        if [ -f server/.env.example ]; then
-            cp server/.env.example server/.env
-            success "Created server/.env from example."
-        else
-             cat > server/.env <<EOF
-DATABASE_URL="postgresql://netbox_ops:netbox_ops@db:5432/netbox_ops"
-PORT=4000
-JWT_SECRET=$(openssl rand -hex 32)
-REDIS_URL="redis://redis:6379"
+    # Create .env.local with secrets if needed
+    if [ ! -f .env.local ]; then
+        if command -v openssl >/dev/null 2>&1; then
+            JWT_SECRET=$(openssl rand -hex 32)
+            CRED_ENCRYPTION_KEY=$(openssl rand -base64 32)
+            cat > .env.local <<EOF
+JWT_SECRET=${JWT_SECRET}
+CRED_ENCRYPTION_KEY=${CRED_ENCRYPTION_KEY}
 EOF
-            success "Created server/.env with generated secret."
+            success "Created .env.local with generated secrets."
+        else
+            warn "openssl not found. Create .env.local and set JWT_SECRET/CRED_ENCRYPTION_KEY manually."
+            touch .env.local
         fi
     fi
 }

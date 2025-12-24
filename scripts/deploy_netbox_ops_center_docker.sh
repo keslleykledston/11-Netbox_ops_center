@@ -181,7 +181,23 @@ install_bare_dependencies() {
   run_as_app "cd '$APP_DIR' && npm run server:install"
   run_as_app "cd '$APP_DIR' && npm run db:migrate"
   run_as_app "cd '$APP_DIR' && npm run prisma:generate"
-  run_as_app "cd '$APP_DIR' && [ -f .env ] && . .env || true; [ -f .env.local ] && . .env.local || true; ADMIN_EMAIL=\"\${DEFAULT_ADMIN_EMAIL:-suporte@suporte.com.br}\" ADMIN_USERNAME=\"\${DEFAULT_ADMIN_USERNAME:-admin}\" ADMIN_PASSWORD=\"\${DEFAULT_ADMIN_PASSWORD:-Ops_pass_}\" node server/scripts/create-admin.js"
+  run_as_app "cd '$APP_DIR' && \
+    read_env_value() { \
+      file=\$1; key=\$2; \
+      [ -f \"\$file\" ] || return 1; \
+      line=\$(grep -E \"^\${key}=\" \"\$file\" | tail -n 1 | cut -d= -f2-); \
+      [ -n \"\$line\" ] || return 1; \
+      line=\$(printf \"%s\" \"\$line\" | sed -e 's/^\"//;s/\"$//' -e \"s/^'//;s/'$//\"); \
+      printf \"%s\" \"\$line\"; \
+    }; \
+    email=\"suporte@suporte.com.br\"; username=\"admin\"; password=\"Ops_pass_\"; \
+    val=\$(read_env_value .env DEFAULT_ADMIN_EMAIL) && email=\$val; \
+    val=\$(read_env_value .env DEFAULT_ADMIN_USERNAME) && username=\$val; \
+    val=\$(read_env_value .env DEFAULT_ADMIN_PASSWORD) && password=\$val; \
+    val=\$(read_env_value .env.local DEFAULT_ADMIN_EMAIL) && email=\$val; \
+    val=\$(read_env_value .env.local DEFAULT_ADMIN_USERNAME) && username=\$val; \
+    val=\$(read_env_value .env.local DEFAULT_ADMIN_PASSWORD) && password=\$val; \
+    ADMIN_EMAIL=\"\$email\" ADMIN_USERNAME=\"\$username\" ADMIN_PASSWORD=\"\$password\" node server/scripts/create-admin.js"
 }
 
 ensure_oxidized_tree() {

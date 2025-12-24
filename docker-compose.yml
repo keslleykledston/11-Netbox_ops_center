@@ -68,10 +68,10 @@ services:
         migrate_ok=0;
         for i in 1 2 3 4 5 6 7 8 9 10; do
           npm --prefix server run db:migrate && migrate_ok=1 && break;
-          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          echo \"[BOOT] Aguardando banco para migracoes ($${i}/10)...\" 1>&2;
           sleep 3;
         done;
-        if [ \"$migrate_ok\" -ne 1 ]; then
+        if [ \"$$migrate_ok\" -ne 1 ]; then
           echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
           exit 1;
         fi;
@@ -133,10 +133,10 @@ services:
         migrate_ok=0;
         for i in 1 2 3 4 5 6 7 8 9 10; do
           npm --prefix server run db:migrate && migrate_ok=1 && break;
-          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          echo \"[BOOT] Aguardando banco para migracoes ($${i}/10)...\" 1>&2;
           sleep 3;
         done;
-        if [ \"$migrate_ok\" -ne 1 ]; then
+        if [ \"$$migrate_ok\" -ne 1 ]; then
           echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
           exit 1;
         fi;
@@ -177,10 +177,10 @@ services:
         migrate_ok=0;
         for i in 1 2 3 4 5 6 7 8 9 10; do
           npm --prefix server run db:migrate && migrate_ok=1 && break;
-          echo \"[BOOT] Aguardando banco para migracoes (${i}/10)...\" 1>&2;
+          echo \"[BOOT] Aguardando banco para migracoes ($${i}/10)...\" 1>&2;
           sleep 3;
         done;
-        if [ \"$migrate_ok\" -ne 1 ]; then
+        if [ \"$$migrate_ok\" -ne 1 ]; then
           echo \"[BOOT] Falha ao aplicar migracoes.\" 1>&2;
           exit 1;
         fi;

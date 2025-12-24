@@ -382,15 +382,24 @@ run_default_admin() {
     local email="suporte@suporte.com.br"
     local username="admin"
     local password="Ops_pass_"
-    if [ -f .env ] || [ -f .env.local ]; then
-        set -a
-        [ -f .env ] && . .env
-        [ -f .env.local ] && . .env.local
-        set +a
-        email="${DEFAULT_ADMIN_EMAIL:-$email}"
-        username="${DEFAULT_ADMIN_USERNAME:-$username}"
-        password="${DEFAULT_ADMIN_PASSWORD:-$password}"
-    fi
+    read_env_value() {
+        local file="$1"
+        local key="$2"
+        local line
+        [ -f "$file" ] || return 1
+        line=$(grep -E "^${key}=" "$file" | tail -n 1 | cut -d= -f2-)
+        if [ -z "$line" ]; then
+            return 1
+        fi
+        line=$(printf "%s" "$line" | sed -e 's/^"//;s/"$//' -e "s/^'//;s/'$//")
+        printf "%s" "$line"
+    }
+    if val=$(read_env_value ".env" "DEFAULT_ADMIN_EMAIL"); then email="$val"; fi
+    if val=$(read_env_value ".env" "DEFAULT_ADMIN_USERNAME"); then username="$val"; fi
+    if val=$(read_env_value ".env" "DEFAULT_ADMIN_PASSWORD"); then password="$val"; fi
+    if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_EMAIL"); then email="$val"; fi
+    if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_USERNAME"); then username="$val"; fi
+    if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_PASSWORD"); then password="$val"; fi
     local attempt=1
     local max_attempts=5
     while [ $attempt -le $max_attempts ]; do

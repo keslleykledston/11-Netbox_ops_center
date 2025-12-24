@@ -177,13 +177,28 @@ bare_install() {
   npm run server:install
   npm run db:migrate
   npm run prisma:generate
-  set -a
-  [ -f .env ] && . .env
-  [ -f .env.local ] && . .env.local
-  set +a
-  ADMIN_EMAIL="${DEFAULT_ADMIN_EMAIL:-suporte@suporte.com.br}" \
-    ADMIN_USERNAME="${DEFAULT_ADMIN_USERNAME:-admin}" \
-    ADMIN_PASSWORD="${DEFAULT_ADMIN_PASSWORD:-Ops_pass_}" \
+  read_env_value() {
+    local file="$1"
+    local key="$2"
+    local line
+    [[ -f "$file" ]] || return 1
+    line=$(grep -E "^${key}=" "$file" | tail -n 1 | cut -d= -f2-)
+    [[ -n "$line" ]] || return 1
+    line=$(printf "%s" "$line" | sed -e 's/^"//;s/"$//' -e "s/^'//;s/'$//")
+    printf "%s" "$line"
+  }
+  email="suporte@suporte.com.br"
+  username="admin"
+  password="Ops_pass_"
+  if val=$(read_env_value ".env" "DEFAULT_ADMIN_EMAIL"); then email="$val"; fi
+  if val=$(read_env_value ".env" "DEFAULT_ADMIN_USERNAME"); then username="$val"; fi
+  if val=$(read_env_value ".env" "DEFAULT_ADMIN_PASSWORD"); then password="$val"; fi
+  if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_EMAIL"); then email="$val"; fi
+  if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_USERNAME"); then username="$val"; fi
+  if val=$(read_env_value ".env.local" "DEFAULT_ADMIN_PASSWORD"); then password="$val"; fi
+  ADMIN_EMAIL="$email" \
+    ADMIN_USERNAME="$username" \
+    ADMIN_PASSWORD="$password" \
     node server/scripts/create-admin.js
 
   log "[+] Starting the stack (web+api+snmp) in background"

@@ -3510,9 +3510,11 @@ app.get("/netbox/sync-state", requireAuth, async (req, res) => {
     } else if (req.user?.tenantId) {
       tenantId = req.user.tenantId;
     }
-    const state = await prisma.netboxSyncState.findUnique({
-      where: { key_tenantId: { key, tenantId } },
-    });
+    const state = tenantId === null
+      ? await prisma.netboxSyncState.findFirst({ where: { key, tenantId: null } })
+      : await prisma.netboxSyncState.findUnique({
+        where: { key_tenantId: { key, tenantId } },
+      });
     if (!state) return res.status(404).json({ error: "Sync state nao encontrado." });
     let metadata = null;
     if (state.metadata) {

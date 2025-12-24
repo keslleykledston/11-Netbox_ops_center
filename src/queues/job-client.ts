@@ -49,8 +49,9 @@ export function subscribeJobEvents(queues: string[], jobId: string, onEvent: (ev
 }
 
 export async function waitForJobCompletion(queue: string, jobId: string, options: WaitOptions = {}) {
-  const timeoutMs = options.timeoutMs ?? 90_000;
-  const intervalMs = options.intervalMs ?? 1_500;
+  const isNetboxQueue = queue === "netbox-sync" || queue === "netbox-pending-refresh";
+  const timeoutMs = options.timeoutMs ?? (isNetboxQueue ? 20 * 60_000 : 90_000);
+  const intervalMs = options.intervalMs ?? (isNetboxQueue ? 3_000 : 1_500);
   const deadline = Date.now() + timeoutMs;
 
   let resolved = false;

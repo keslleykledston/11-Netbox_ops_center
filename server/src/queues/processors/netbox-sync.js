@@ -65,19 +65,30 @@ export async function processNetboxSync(job) {
   } catch (error) {
     console.error('Netbox sync job failed:', error);
     try {
-      await prisma.netboxSyncState.upsert({
-        where: { key_tenantId: { key: 'devices', tenantId: tenantId || null } },
-        update: {
-          lastRunAt: new Date(),
-          lastError: String(error?.message || error),
-        },
-        create: {
-          key: 'devices',
-          tenantId: tenantId || null,
-          lastRunAt: new Date(),
-          lastError: String(error?.message || error),
-        },
-      });
+      const syncTenantId = tenantId || null;
+      const existingState = syncTenantId === null
+        ? await prisma.netboxSyncState.findFirst({ where: { key: 'devices', tenantId: null } })
+        : await prisma.netboxSyncState.findUnique({
+          where: { key_tenantId: { key: 'devices', tenantId: syncTenantId } },
+        });
+      if (existingState) {
+        await prisma.netboxSyncState.update({
+          where: { id: existingState.id },
+          data: {
+            lastRunAt: new Date(),
+            lastError: String(error?.message || error),
+          },
+        });
+      } else {
+        await prisma.netboxSyncState.create({
+          data: {
+            key: 'devices',
+            tenantId: syncTenantId,
+            lastRunAt: new Date(),
+            lastError: String(error?.message || error),
+          },
+        });
+      }
     } catch (stateErr) {
       console.warn('[NetBox][WARN] Failed to update sync state after error:', stateErr?.message || stateErr);
     }

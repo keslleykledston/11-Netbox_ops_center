@@ -401,9 +401,11 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
 
   if (resources.includes("devices")) {
     try {
-      const existingState = await prisma.netboxSyncState.findUnique({
-        where: { key_tenantId: { key: syncKey, tenantId: syncTenantId } },
-      });
+      const existingState = syncTenantId === null
+        ? await prisma.netboxSyncState.findFirst({ where: { key: syncKey, tenantId: null } })
+        : await prisma.netboxSyncState.findUnique({
+          where: { key_tenantId: { key: syncKey, tenantId: syncTenantId } },
+        });
       if (existingState?.lastCursor && !fullSync) {
         lastCursor = existingState.lastCursor;
       }
@@ -414,16 +416,21 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         } catch { }
       }
       if (fullSync) fullSyncCompleted = true;
-      await prisma.netboxSyncState.upsert({
-        where: { key_tenantId: { key: syncKey, tenantId: syncTenantId } },
-        update: { lastRunAt: new Date() },
-        create: {
-          key: syncKey,
-          tenantId: syncTenantId,
-          lastCursor,
-          lastRunAt: new Date(),
-        },
-      });
+      if (existingState) {
+        await prisma.netboxSyncState.update({
+          where: { id: existingState.id },
+          data: { lastRunAt: new Date() },
+        });
+      } else {
+        await prisma.netboxSyncState.create({
+          data: {
+            key: syncKey,
+            tenantId: syncTenantId,
+            lastCursor,
+            lastRunAt: new Date(),
+          },
+        });
+      }
     } catch (err) {
       console.warn('[NetBox][WARN] Failed to load sync state:', err?.message || err);
     }
@@ -873,22 +880,32 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         fullSync,
         fullSyncCompleted,
       });
-      await prisma.netboxSyncState.upsert({
-        where: { key_tenantId: { key: syncKey, tenantId: syncTenantId } },
-        update: {
-          lastCursor: nextCursor,
-          lastSuccessAt: new Date(),
-          lastError: null,
-          metadata,
-        },
-        create: {
-          key: syncKey,
-          tenantId: syncTenantId,
-          lastCursor: nextCursor,
-          lastSuccessAt: new Date(),
-          metadata,
-        },
-      });
+      const existingState = syncTenantId === null
+        ? await prisma.netboxSyncState.findFirst({ where: { key: syncKey, tenantId: null } })
+        : await prisma.netboxSyncState.findUnique({
+          where: { key_tenantId: { key: syncKey, tenantId: syncTenantId } },
+        });
+      if (existingState) {
+        await prisma.netboxSyncState.update({
+          where: { id: existingState.id },
+          data: {
+            lastCursor: nextCursor,
+            lastSuccessAt: new Date(),
+            lastError: null,
+            metadata,
+          },
+        });
+      } else {
+        await prisma.netboxSyncState.create({
+          data: {
+            key: syncKey,
+            tenantId: syncTenantId,
+            lastCursor: nextCursor,
+            lastSuccessAt: new Date(),
+            metadata,
+          },
+        });
+      }
     } catch (err) {
       console.warn('[NetBox][WARN] Failed to update sync state:', err?.message || err);
     }

@@ -393,6 +393,9 @@ export const api = {
         body: JSON.stringify(actionIds),
       });
     },
+    async getMovideskSyncLogs(limit: number = 50) {
+      return this.fetch(`/sync/movidesk/logs?limit=${limit}`);
+    },
 
 
     async getBackupStatus(deviceName: string) {

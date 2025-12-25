@@ -86,6 +86,9 @@ export interface Application {
   status: 'connected' | 'disconnected' | 'testing';
   description?: string;
   config?: string | null;
+  autoSyncEnabled?: boolean;
+  lastSyncAt?: string | null;
+  lastSyncNote?: string | null;
   createdAt: string;
   updatedAt: string;
 }

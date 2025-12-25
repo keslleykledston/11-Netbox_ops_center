@@ -1,0 +1,6 @@
+-- Prisma Migration
+-- CreateDate: 2025-12-24T12:00:00Z
+
+ALTER TABLE "Application" ADD COLUMN IF NOT EXISTS "autoSyncEnabled" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "Application" ADD COLUMN IF NOT EXISTS "lastSyncAt" TIMESTAMPTZ;
+ALTER TABLE "Application" ADD COLUMN IF NOT EXISTS "lastSyncNote" TEXT;

@@ -2,7 +2,7 @@ import uuid
 import logging
 import re
 from datetime import datetime, timezone
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from backend.services.movidesk_service import movidesk_svc
 from backend.services.netbox_service import netbox_svc
 from backend.services.jumpserver_service import jumpserver_svc
@@ -91,6 +91,10 @@ class SyncService:
             return tenant.get("custom_fields") or {}
         return getattr(tenant, "custom_fields", {}) or {}
 
+    def _tenant_group_name(self) -> str:
+        name = (settings.NETBOX_TENANT_GROUP_FILTER or "").strip()
+        return name or "K3G Solutions"
+
     async def generate_sync_report(self, store_pending: bool = True) -> List[Dict[str, Any]]:
         """
         Compare systems and generate a report of pending actions.
@@ -98,14 +102,15 @@ class SyncService:
         try:
             snapshot_ttl = settings.HUB_SNAPSHOT_TTL or settings.CACHE_TTL
             allow_stale = settings.HUB_SNAPSHOT_ALLOW_STALE
+            tenant_group_name = self._tenant_group_name()
 
-            movidesk_companies = await load_movidesk_snapshot_companies(snapshot_ttl, allow_stale=allow_stale)
-            if movidesk_companies is None:
-                movidesk_companies = await movidesk_svc.get_active_companies()
-                try:
-                    await upsert_movidesk_companies(movidesk_companies)
-                except Exception as e:
-                    logger.warning(f"Falha ao persistir Movidesk localmente: {e}")
+            # SEMPRE consulta Movidesk REAL para garantir dados atualizados
+            movidesk_companies = await movidesk_svc.get_active_companies()
+            logger.info(f"Carregadas {len(movidesk_companies) if movidesk_companies else 0} empresas do Movidesk REAL")
+            try:
+                await upsert_movidesk_companies(movidesk_companies)
+            except Exception as e:
+                logger.warning(f"Falha ao persistir Movidesk localmente: {e}")
 
             js_assets = await load_jumpserver_snapshot_assets(snapshot_ttl, allow_stale=allow_stale)
             if js_assets is None:
@@ -116,9 +121,9 @@ class SyncService:
                     logger.warning(f"Falha ao persistir JumpServer localmente: {e}")
 
             # User requirement: Only tenants from 'K3G Solutions' group
-            netbox_tenants = await load_netbox_snapshot_tenants("K3G Solutions", snapshot_ttl, allow_stale=allow_stale)
-            if netbox_tenants is None:
-                netbox_tenants = await netbox_svc.get_tenants(**{"group-name": "K3G Solutions"})
+            # SEMPRE consulta NetBox REAL para garantir dados atualizados (custom_fields, group, etc)
+            netbox_tenants = await netbox_svc.get_tenants(**{"group-name": tenant_group_name})
+            logger.info(f"Carregados {len(netbox_tenants) if netbox_tenants else 0} tenants do NetBox REAL (grupo: {tenant_group_name})")
             
             # Mapping Netbox tenants
             nb_by_movidesk_id = {}
@@ -168,7 +173,20 @@ class SyncService:
 
                 if not matching_tenant and not fallback_match:
                     # CASE 1: TRUE NEW CLIENT
+                    # Verifica se JumpServer node já existe antes de marcar para criação
+                    node_path = f"/DEFAULT/PRODUÇÃO/{name}"
+                    js_exists = await jumpserver_svc.check_node_exists(node_path)
+
                     action_id = str(uuid.uuid4())
+                    systems_needed = ["NetBox", "Oxidized"]
+                    details_parts = [f"Tenant '{name}' não encontrado no NetBox."]
+
+                    if not js_exists:
+                        systems_needed.append("JumpServer")
+                        details_parts.append(f"Node JumpServer será criado em '{node_path}'.")
+                    else:
+                        details_parts.append(f"Node JumpServer já existe em '{node_path}'.")
+
                     action = {
                         "id": action_id,
                         "status": "pending_create",
@@ -176,8 +194,8 @@ class SyncService:
                         "client_name": name,
                         "cnpj": cnpj or "N/A",
                         "movidesk_id": m_id,
-                        "systems": ["NetBox", "JumpServer", "Oxidized"],
-                        "details": f"Cliente não encontrado. Criar novo Tenant '{name}' e infra associada."
+                        "systems": systems_needed,
+                        "details": " ".join(details_parts)
                     }
                     if store_pending:
                         if store_pending:
@@ -301,6 +319,7 @@ class SyncService:
 
     async def execute_actions(self, action_ids: List[str]) -> List[Dict[str, Any]]:
         results = []
+        tenant_group_name = self._tenant_group_name()
         for aid in action_ids:
             action = self._pending_actions.get(aid)
             if not action:
@@ -310,7 +329,7 @@ class SyncService:
             try:
                 if action["type"] == "sync_client":
                     # 1. NetBox - Ensure group exists or get ID
-                    group = await netbox_svc.get_tenant_group_by_name("K3G Solutions")
+                    group = await netbox_svc.get_tenant_group_by_name(tenant_group_name)
                     group_id = group.id if group else None
 
                     # Convert Movidesk ID to int for NetBox compatibility
@@ -329,14 +348,18 @@ class SyncService:
                         },
                         group_id=group_id
                     )
-                    
-                    # 2. JumpServer
+
+                    # 2. JumpServer - só cria se estiver na lista de sistemas
                     node_path = f"/DEFAULT/PRODUÇÃO/{action['client_name']}"
-                    await jumpserver_svc.ensure_node_path(node_path)
-                    
+                    if "JumpServer" in action.get("systems", []):
+                        await jumpserver_svc.ensure_node_path(node_path)
+                        logger.info(f"Node JumpServer criado/verificado: {node_path}")
+                    else:
+                        logger.info(f"Node JumpServer já existe (skip): {node_path}")
+
                     # 3. Oxidized (Logic to create group if possible)
                     # For now we assume the group is ready or assigned in metadata.
-                    
+
                     results.append({"id": aid, "status": "success", "client": action["client_name"]})
                     try:
                         await update_sync_action_status(aid, "success")
@@ -361,7 +384,7 @@ class SyncService:
 
                     if not tenant:
                         # Fallback 2: Search by name in the same group
-                        tenants = await netbox_svc.get_tenants(**{"group-name": "K3G Solutions"})
+                        tenants = await netbox_svc.get_tenants(**{"group-name": tenant_group_name})
                         for t in tenants:
                             if t.name == action["client_name"]:
                                 tenant = t
@@ -373,7 +396,7 @@ class SyncService:
                         logger.info(f"Tenant '{action['client_name']}' não encontrado no Netbox. Criando novo tenant.")
 
                         # Get or use group
-                        group = await netbox_svc.get_tenant_group_by_name("K3G Solutions")
+                        group = await netbox_svc.get_tenant_group_by_name(tenant_group_name)
                         group_id = group.id if group else None
 
                         # Convert Movidesk ID to int for NetBox compatibility

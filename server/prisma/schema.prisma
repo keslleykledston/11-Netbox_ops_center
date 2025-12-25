@@ -104,6 +104,9 @@ model Application {
   status      String   @default("disconnected")
   description String?
   config      String?  // JSON string for app-specific configs (Oxidized interval, timeout, etc.)
+  autoSyncEnabled Boolean @default(true)
+  lastSyncAt     DateTime?
+  lastSyncNote   String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

@@ -464,8 +464,13 @@ class JumpServerService:
             logger.error(f"JumpServer node list unavailable; cannot verify '{normalized_path}'.")
             return False
 
+        # Log para debug
+        logger.debug(f"Verificando path: '{path}' -> normalizado: '{normalized_path}'")
+        logger.debug(f"Total de nodes carregados: {len(nodes)}")
+
         matches_exact = [n for n in nodes if self._normalize_path(n.get("full_value") or "") == normalized_path]
         if matches_exact:
+            logger.debug(f"Node encontrado (match exato): {matches_exact[0].get('full_value')}")
             return True
 
         # Fallback: case-insensitive comparison to avoid false negatives on casing
@@ -475,6 +480,11 @@ class JumpServerService:
             if self._normalize_path(full_val).lower() == normalized_lower:
                 logger.warning(f"Node exists with different casing: stored '{full_val}', requested '{normalized_path}'")
                 return True
+
+        # Debug: mostrar alguns nodes similares
+        similar = [n.get("full_value") for n in nodes if path.split("/")[-1].upper() in (n.get("full_value") or "").upper()][:5]
+        if similar:
+            logger.debug(f"Nodes similares encontrados: {similar}")
 
         logger.warning(f"Node '{normalized_path}' not found among {len(nodes)} nodes.")
         return False

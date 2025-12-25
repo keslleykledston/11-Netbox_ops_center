@@ -69,6 +69,24 @@ const NETBOX_PENDING_REFRESH_INTERVAL_MS = (() => {
   return 10 * 60 * 1000;
 })();
 
+const DEFAULT_MOVIDESK_APP_NAME = process.env.DEFAULT_MOVIDESK_APP_NAME || "Movidesk";
+const DEFAULT_MOVIDESK_API_URL = process.env.DEFAULT_MOVIDESK_API_URL || "https://api.movidesk.com/public/v1";
+const DEFAULT_MOVIDESK_TOKEN = process.env.DEFAULT_MOVIDESK_TOKEN || process.env.MOVIDESK_TOKEN || "";
+
+const DEFAULT_NETBOX_APP_NAME = process.env.DEFAULT_NETBOX_APP_NAME || "NetBox";
+const DEFAULT_NETBOX_API_URL = process.env.DEFAULT_NETBOX_API_URL || process.env.NETBOX_URL || "";
+const DEFAULT_NETBOX_API_TOKEN = process.env.DEFAULT_NETBOX_API_TOKEN || process.env.NETBOX_TOKEN || "";
+
+const DEFAULT_JUMP_APP_NAME = process.env.DEFAULT_JUMP_APP_NAME || "JumpServer";
+const DEFAULT_JUMP_API_URL =
+  process.env.DEFAULT_JUMP_API_URL || process.env.JUMPSERVER_URL || "";
+const DEFAULT_JUMP_API_TOKEN =
+  process.env.DEFAULT_JUMP_API_TOKEN || process.env.JUMPSERVER_TOKEN || process.env.JUMPSERVER_API_KEY || "";
+const DEFAULT_JUMP_CREDENTIALS = {
+  username: process.env.JUMPSERVER_USERNAME || "",
+  password: process.env.JUMPSERVER_PASSWORD || "",
+};
+
 const normalizeFieldKey = (key) => String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const jumpserverFieldCandidates = new Set([
   'id do dispositivo no jumpserver',
@@ -759,13 +777,127 @@ async function ensureDefaultAdminUser() {
   }
 }
 
+async function ensureDefaultApplicationEntry({
+  tenantId,
+  name,
+  contains,
+  url,
+  apiKey,
+  description,
+  config,
+}) {
+  try {
+    const existing = await prisma.application.findFirst({
+      where: {
+        tenantId,
+        name: { contains: contains || name, mode: 'insensitive' },
+      },
+    });
+    if (existing) return true;
+
+    const payload = {
+      tenantId,
+      name,
+      url: url || '',
+      apiKey: apiKey || '',
+      status: url && apiKey ? 'connected' : 'disconnected',
+      description: description || null,
+      autoSyncEnabled: true,
+    };
+    if (config) {
+      payload.config = typeof config === 'string' ? config : JSON.stringify(config);
+    }
+
+    await prisma.application.create({ data: payload });
+    return true;
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultApplicationEntry failed:', String(e?.message || e));
+    return false;
+  }
+}
+
+async function ensureDefaultNetboxApp() {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { name: 'default' } });
+    if (!tenant) return false;
+    return ensureDefaultApplicationEntry({
+      tenantId: tenant.id,
+      name: DEFAULT_NETBOX_APP_NAME,
+      contains: 'netbox',
+      url: DEFAULT_NETBOX_API_URL,
+      apiKey: DEFAULT_NETBOX_API_TOKEN,
+      description: 'Integração NetBox padrão registrada durante a instalação.',
+    });
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultNetboxApp failed:', String(e?.message || e));
+    return false;
+  }
+}
+
+async function ensureDefaultJumpserverApp() {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { name: 'default' } });
+    if (!tenant) return false;
+    const config = { ...DEFAULT_JUMP_CREDENTIALS };
+    if (!config.username) delete config.username;
+    if (!config.password) delete config.password;
+    return ensureDefaultApplicationEntry({
+      tenantId: tenant.id,
+      name: DEFAULT_JUMP_APP_NAME,
+      contains: 'jumpserver',
+      url: DEFAULT_JUMP_API_URL,
+      apiKey: DEFAULT_JUMP_API_TOKEN,
+      description: 'Integração JumpServer registrada durante a instalação.',
+      config: Object.keys(config).length ? config : undefined,
+    });
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultJumpserverApp failed:', String(e?.message || e));
+    return false;
+  }
+}
+
+async function ensureDefaultMovideskApp() {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { name: 'default' } });
+    if (!tenant) return false;
+
+    const existing = await prisma.application.findFirst({
+      where: {
+        tenantId: tenant.id,
+        name: { contains: 'movidesk', mode: 'insensitive' },
+      },
+    });
+    if (existing) return true;
+
+    await prisma.application.create({
+      data: {
+        tenantId: tenant.id,
+        name: DEFAULT_MOVIDESK_APP_NAME,
+        url: DEFAULT_MOVIDESK_API_URL,
+        apiKey: DEFAULT_MOVIDESK_TOKEN,
+        status: DEFAULT_MOVIDESK_TOKEN ? 'connected' : 'disconnected',
+        description: 'Integração Movidesk configurada durante a instalação',
+        autoSyncEnabled: true,
+      },
+    });
+    console.log('[BOOT] Created default Movidesk application entry');
+    return true;
+  } catch (e) {
+    console.warn('[BOOT][WARN] ensureDefaultMovideskApp failed:', String(e?.message || e));
+    return false;
+  }
+}
+
 async function ensureDefaultBootstrap() {
   const attempts = Math.max(Number(process.env.BOOTSTRAP_RETRY_ATTEMPTS) || 10, 1);
   const delayMs = Math.max(Number(process.env.BOOTSTRAP_RETRY_DELAY_MS) || 3000, 500);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     const tenantOk = await ensureDefaultTenant();
     const adminOk = await ensureDefaultAdminUser();
-    if (tenantOk && adminOk) return;
+    const movideskOk = await ensureDefaultMovideskApp();
+    const netboxOk = await ensureDefaultNetboxApp();
+    const jumpserverOk = await ensureDefaultJumpserverApp();
+    if (tenantOk && adminOk && movideskOk && netboxOk && jumpserverOk) return;
     if (attempt < attempts) {
       console.warn(`[BOOT][WARN] Default bootstrap pending (${attempt}/${attempts}). Retrying in ${delayMs}ms.`);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -1714,6 +1846,10 @@ app.patch("/applications/:id", requireAuth, async (req, res) => {
     if (body.password !== undefined) currentConfig.password = body.password;
 
     data.config = JSON.stringify(currentConfig);
+  }
+
+  if (body.autoSyncEnabled !== undefined) {
+    data.autoSyncEnabled = Boolean(body.autoSyncEnabled);
   }
 
   for (const k of allowed) {

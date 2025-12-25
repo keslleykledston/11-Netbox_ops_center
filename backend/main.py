@@ -28,7 +28,9 @@ async def movidesk_sync_loop():
     while True:
         try:
             if settings.MOVIDESK_SYNC_ENABLED:
-                await sync_svc.generate_sync_report(store_pending=False)
+                app_row = await load_movidesk_application()
+                if app_row and app_row.get("autoSyncEnabled"):
+                    await run_movidesk_sync_task(app_row)
         except asyncio.CancelledError:
             break
         except Exception:
@@ -69,12 +71,90 @@ def _is_snapshot_fresh(last_seen, ttl_seconds: int) -> bool:
     return now - last_seen <= timedelta(seconds=ttl_seconds)
 
 
+async def load_movidesk_application() -> Optional[Dict[str, Any]]:
+    pool = await get_pool()
+    if not pool:
+        return None
+    row = await pool.fetchrow(
+        'SELECT "id", "status", "autoSyncEnabled", "lastSyncAt", "lastSyncNote" FROM "Application" WHERE LOWER("name") LIKE $1 ORDER BY "id" DESC LIMIT 1',
+        '%movidesk%'
+    )
+    return row
+
+
+async def update_movidesk_application_status(app_id: int, connected: bool, note: Optional[str] = None):
+    if not app_id:
+        return
+    pool = await get_pool()
+    if not pool:
+        return
+    status = "connected" if connected else "disconnected"
+    now = datetime.now(timezone.utc)
+    await pool.execute(
+        'UPDATE "Application" SET "status" = $1, "lastSyncAt" = $2, "lastSyncNote" = $3 WHERE "id" = $4',
+        status,
+        now,
+        note,
+        app_id
+    )
+
+
+async def run_movidesk_sync_task(app_row: Dict[str, Any]):
+    if not app_row:
+        return
+    success = False
+    note = None
+    try:
+        # Gera o relatório de sincronização
+        report = await sync_svc.generate_sync_report(store_pending=True)
+
+        # Se autoSyncEnabled estiver true, executa as ações automaticamente
+        auto_sync_enabled = bool(app_row.get("autoSyncEnabled"))
+        if auto_sync_enabled and report:
+            # Filtra apenas ações pendentes (pending_create, pending_update)
+            pending_actions = [
+                action["id"] for action in report
+                if action.get("status") in ["pending_create", "pending_update"]
+            ]
+
+            if pending_actions:
+                logger.info(f"Auto-sync habilitado: executando {len(pending_actions)} ações pendentes")
+                results = await sync_svc.execute_actions(pending_actions)
+
+                # Conta sucessos e falhas
+                success_count = sum(1 for r in results if r.get("status") in ["success", "warning"])
+                error_count = sum(1 for r in results if r.get("status") == "error")
+
+                if error_count > 0:
+                    note = f"Sincronizado: {success_count} OK, {error_count} erros"
+                else:
+                    note = f"Sincronizado: {success_count} clientes processados automaticamente"
+            else:
+                note = "Nenhuma ação pendente"
+        else:
+            # Se auto-sync está off, apenas conta as pendências
+            pending_count = sum(1 for action in report if action.get("status") in ["pending_create", "pending_update"])
+            if pending_count > 0:
+                note = f"{pending_count} ações aguardando aprovação manual"
+            else:
+                note = "Sincronizado"
+
+        success = True
+    except Exception as exc:
+        note = str(exc)
+        logger.exception("Falha ao executar varredura Movidesk periódica.")
+    finally:
+        await update_movidesk_application_status(app_row["id"], success, note)
+
+
 async def load_jumpserver_snapshot_assets(ttl_seconds: int) -> Optional[List[Dict[str, Any]]]:
     pool = await get_pool()
     if not pool:
         return None
     async with pool.acquire() as conn:
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "JumpserverAssetSnapshot"')
+        if not last_seen:
+            return None
         if not _is_snapshot_fresh(last_seen, ttl_seconds) and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
         rows = await conn.fetch(
@@ -110,6 +190,8 @@ async def load_netbox_snapshot_devices(limit: int, group_filter: str, ttl_second
         )
         if not state:
             return None
+        if not state["lastSuccessAt"]:
+            return None
         try:
             metadata = json.loads(state["metadata"]) if state["metadata"] else {}
         except Exception:
@@ -121,6 +203,8 @@ async def load_netbox_snapshot_devices(limit: int, group_filter: str, ttl_second
             return None
 
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "NetboxDeviceSnapshot"')
+        if not last_seen:
+            return None
         if not _is_snapshot_fresh(last_seen, ttl_seconds) and not settings.HUB_SNAPSHOT_ALLOW_STALE:
             return None
 
@@ -443,7 +527,19 @@ async def debug_config():
 @app.get("/sync/movidesk/report")
 async def get_movidesk_sync_report():
     """Gera relatório de pendências entre Movidesk e Sistemas Internos."""
-    report = await sync_svc.generate_sync_report()
+    app_row = await load_movidesk_application()
+    report = []
+    success = False
+    note = None
+    try:
+        report = await sync_svc.generate_sync_report()
+        success = True
+    except Exception as exc:
+        note = str(exc)
+        logger.exception("Falha ao gerar relatório Movidesk manual.")
+    finally:
+        if app_row:
+            await update_movidesk_application_status(app_row["id"], success, note)
     return {
         "count": len(report),
         "actions": report
@@ -456,7 +552,16 @@ async def get_movidesk_sync_status():
     if not summary.get("last_run"):
         await sync_svc.generate_sync_report(store_pending=False)
         summary = sync_svc.get_last_report_summary()
-    return summary
+    app_row = await load_movidesk_application()
+    response = {
+        **summary,
+        "summary": summary,
+        "appStatus": app_row["status"] if app_row else "disconnected",
+        "autoSyncEnabled": bool(app_row["autoSyncEnabled"]) if app_row else False,
+        "lastSyncAt": app_row["lastSyncAt"].isoformat() if app_row and app_row["lastSyncAt"] else None,
+        "lastSyncNote": app_row["lastSyncNote"] if app_row else None,
+    }
+    return response
 
 @app.post("/sync/movidesk/approve")
 async def approve_movidesk_sync(action_ids: List[str]):
@@ -465,6 +570,54 @@ async def approve_movidesk_sync(action_ids: List[str]):
     return {
         "results": results
     }
+
+@app.get("/sync/movidesk/logs")
+async def get_movidesk_sync_logs(limit: int = 50):
+    """Retorna os logs das últimas sincronizações do Movidesk."""
+    try:
+        pool = await get_pool()
+        if not pool:
+            return {"logs": [], "message": "Database pool not available"}
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                '''
+                SELECT
+                    msa."id",
+                    msa."status",
+                    msa."type",
+                    msa."movideskId",
+                    msa."netboxTenantName" as "clientName",
+                    msa."details",
+                    msa."createdAt",
+                    msa."updatedAt"
+                FROM "MovideskSyncAction" msa
+                ORDER BY msa."updatedAt" DESC
+                LIMIT $1
+                ''',
+                limit
+            )
+
+        logs = []
+        for row in rows:
+            logs.append({
+                "id": row["id"],
+                "status": row["status"],
+                "type": row["type"],
+                "movideskId": row["movideskId"],
+                "clientName": row["clientName"],
+                "details": row["details"],
+                "createdAt": row["createdAt"].isoformat() if row["createdAt"] else None,
+                "updatedAt": row["updatedAt"].isoformat() if row["updatedAt"] else None,
+            })
+
+        return {
+            "total": len(logs),
+            "logs": logs
+        }
+    except Exception as e:
+        logger.exception("Falha ao buscar logs de sincronização Movidesk")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/debug/jumpserver/nodes")
 async def debug_jumpserver_nodes():

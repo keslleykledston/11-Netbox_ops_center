@@ -35,6 +35,8 @@ async def load_movidesk_snapshot_companies(ttl_seconds: int, allow_stale: bool =
         return None
     async with pool.acquire() as conn:
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "MovideskCompany"')
+        if not last_seen:
+            return None
         if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
             return None
         rows = await conn.fetch(
@@ -66,6 +68,8 @@ async def load_jumpserver_snapshot_assets(ttl_seconds: int, allow_stale: bool = 
         return None
     async with pool.acquire() as conn:
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "JumpserverAssetSnapshot"')
+        if not last_seen:
+            return None
         if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
             return None
         rows = await conn.fetch(
@@ -105,6 +109,8 @@ async def load_netbox_snapshot_tenants(group_filter: str, ttl_seconds: int, allo
         return None
     async with pool.acquire() as conn:
         last_seen = await conn.fetchval('SELECT MAX("lastSeenAt") FROM "NetboxTenantSnapshot"')
+        if not last_seen:
+            return None
         if not _is_snapshot_fresh(last_seen, ttl_seconds) and not allow_stale:
             return None
         query = 'SELECT "netboxId", "name", "groupName", "erpId", "cnpj", "rawData" FROM "NetboxTenantSnapshot"'

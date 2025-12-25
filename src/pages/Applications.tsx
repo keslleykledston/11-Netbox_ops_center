@@ -2,6 +2,7 @@ import DashboardLayout from "@/components/layout/DashboardLayout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Plus, Settings, Save, X, CheckCircle, AlertCircle, Loader2, Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -55,6 +56,10 @@ const Applications = () => {
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showHubModal, setShowHubModal] = useState(false);
   const [syncAlert, setSyncAlert] = useState(false);
+  const [movideskMeta, setMovideskMeta] = useState<{ autoSyncEnabled?: boolean; lastSyncAt?: string | null; lastSyncNote?: string | null } | null>(null);
+  const [showLogsModal, setShowLogsModal] = useState(false);
+  const [syncLogs, setSyncLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   useEffect(() => {
     if (!API_MODE) return;
@@ -63,9 +68,16 @@ const Applications = () => {
       try {
         const res = await api.hub.getMovideskSyncStatus();
         if (!active) return;
-        setSyncAlert(!!res?.has_discrepancies);
+        const summarySource = res?.summary || res;
+        setSyncAlert(!!summarySource?.has_discrepancies);
+        setMovideskMeta({
+          autoSyncEnabled: res?.autoSyncEnabled ?? summarySource?.autoSyncEnabled ?? null,
+          lastSyncAt: res?.lastSyncAt ?? summarySource?.lastSyncAt ?? null,
+          lastSyncNote: res?.lastSyncNote ?? summarySource?.lastSyncNote ?? null,
+        });
       } catch {
         if (active) setSyncAlert(false);
+        if (active) setMovideskMeta(null);
       }
     };
     loadStatus();
@@ -76,6 +88,30 @@ const Applications = () => {
     };
   }, []);
 
+  const formatTimestamp = (value?: string | null) => {
+    if (!value) return "Nunca sincronizado";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString();
+  };
+
+  const loadMovideskLogs = async () => {
+    setLoadingLogs(true);
+    setShowLogsModal(true);
+    try {
+      const response = await api.hub.getMovideskSyncLogs(50);
+      setSyncLogs(response.logs || []);
+    } catch (error) {
+      toast({
+        title: "Erro ao carregar logs",
+        description: String((error as any)?.message || error),
+        variant: "destructive",
+      });
+      setSyncLogs([]);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
 
   const testConnection = async (appId: string) => {
     updateApplication(appId, { status: "testing" });
@@ -154,6 +190,7 @@ const Applications = () => {
 
   const isNetbox = (app: Application) => /netbox/i.test(app.name);
   const isJumpserver = (app: Application) => /jumpserver/i.test(app.name);
+  const isMovideskApp = (app: Application) => /movidesk/i.test(app.name);
   const isNetboxName = (name: string) => /netbox/i.test(name || "");
   const isJumpserverName = (name: string) => /jumpserver/i.test(name || "");
   const isOxidized = (app: Application) => /oxidized/i.test(app.name);
@@ -402,6 +439,21 @@ const Applications = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
+                    {/* Ícone de alerta se Movidesk tem pendências e auto-sync OFF */}
+                    {isMovideskApp(app) && syncAlert && !(app.autoSyncEnabled ?? true) && (
+                      <div className="relative group">
+                        <button
+                          onClick={() => setShowHubModal(true)}
+                          className="hover:scale-110 transition-transform"
+                          title="Clique para revisar pendências"
+                        >
+                          <AlertCircle className="h-5 w-5 text-amber-500 animate-pulse cursor-pointer" />
+                        </button>
+                        <div className="absolute right-0 top-6 hidden group-hover:block bg-popover text-popover-foreground text-xs p-2 rounded shadow-lg z-10 w-48 border pointer-events-none">
+                          Há pendências aguardando aprovação manual. Clique para revisar.
+                        </div>
+                      </div>
+                    )}
                     {getStatusIcon(app.status)}
                     <span className={`px-2 py-1 text-xs rounded-full ${getStatusBadgeClass(app.status)}`}>
                       {getStatusText(app.status)}
@@ -451,6 +503,45 @@ const Applications = () => {
                     )}
                   </div>
                 </div>
+                {isMovideskApp(app) && editingId !== app.id && (
+                  <div className="border border-border/60 rounded-xl bg-muted/30 p-3 space-y-2 text-sm">
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-foreground">Movidesk Sync</p>
+                        <p className="text-xs text-muted-foreground">Verifica novas empresas a cada 5 minutos</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] text-muted-foreground tracking-wide uppercase">Auto</span>
+                        <Switch
+                          checked={app.autoSyncEnabled ?? true}
+                          onCheckedChange={(value) => updateApplication(app.id, { autoSyncEnabled: Boolean(value) })}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {app.autoSyncEnabled ?? true
+                        ? "Sincronização automática habilitada: empresas são enviadas ao NetBox e JumpServer em lote."
+                        : "Auto-sync desligado: apenas alertas de pendências serão mostrados."}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Última consulta: {formatTimestamp(app.lastSyncAt ?? movideskMeta?.lastSyncAt)}
+                    </p>
+                    {movideskMeta?.lastSyncNote && (
+                      <p className="text-[11px] text-amber-400">Último retorno: {movideskMeta.lastSyncNote}</p>
+                    )}
+                    <div className="pt-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-2 w-full"
+                        onClick={loadMovideskLogs}
+                      >
+                        <Activity className="h-4 w-4" />
+                        Ver Logs de Sincronização
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {(isNetbox(app) || isJumpserver(app)) && editingId === app.id && (
                   <>
                     <div className="grid grid-cols-2 gap-4">
@@ -866,6 +957,94 @@ const Applications = () => {
 
           <div className="pt-4 border-t flex justify-end">
             <Button onClick={() => setShowAuditModal(false)}>Fechar Relatório</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showLogsModal} onOpenChange={setShowLogsModal}>
+        <DialogContent className="max-w-5xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              Logs de Sincronização Movidesk
+            </DialogTitle>
+            <DialogDescription>
+              Histórico das últimas 50 sincronizações com NetBox e JumpServer
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-auto py-4">
+            {loadingLogs ? (
+              <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                <Loader2 className="h-12 w-12 text-primary animate-spin" />
+                <p className="text-muted-foreground animate-pulse">Carregando logs...</p>
+              </div>
+            ) : syncLogs.length > 0 ? (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Data/Hora</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead>Tipo</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Detalhes</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {syncLogs.map((log: any) => (
+                    <TableRow key={log.id}>
+                      <TableCell className="text-xs">
+                        {formatTimestamp(log.updatedAt || log.createdAt)}
+                      </TableCell>
+                      <TableCell className="font-medium">{log.clientName || "N/A"}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className="text-xs">
+                          {log.type === "sync_client" && "Novo Cliente"}
+                          {log.type === "update_client" && "Atualização"}
+                          {log.type === "synced" && "Sincronizado"}
+                          {!["sync_client", "update_client", "synced"].includes(log.type) && log.type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            log.status === "success" || log.status === "synced"
+                              ? "default"
+                              : log.status === "warning"
+                              ? "outline"
+                              : log.status.includes("pending")
+                              ? "secondary"
+                              : "destructive"
+                          }
+                          className="text-xs"
+                        >
+                          {log.status === "success" && "Sucesso"}
+                          {log.status === "synced" && "Sincronizado"}
+                          {log.status === "warning" && "Aviso"}
+                          {log.status === "error" && "Erro"}
+                          {log.status === "pending_create" && "Pendente Criação"}
+                          {log.status === "pending_update" && "Pendente Atualização"}
+                          {!["success", "synced", "warning", "error", "pending_create", "pending_update"].includes(log.status) && log.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-xs max-w-md truncate" title={log.details}>
+                        {log.details || "—"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-10 bg-muted/5 rounded-xl border">
+                <AlertCircle className="h-10 w-10 text-muted-foreground mb-2" />
+                <p className="font-semibold text-muted-foreground">Nenhum log encontrado</p>
+                <p className="text-sm text-muted-foreground">As sincronizações aparecerão aqui quando executadas</p>
+              </div>
+            )}
+          </div>
+
+          <div className="pt-4 border-t flex justify-end">
+            <Button onClick={() => setShowLogsModal(false)}>Fechar</Button>
           </div>
         </DialogContent>
       </Dialog>

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Movidesk
     MOVIDESK_API_URL: str = "https://api.movidesk.com/public/v1"
     MOVIDESK_TOKEN: Optional[str] = None
-    MOVIDESK_SYNC_INTERVAL: int = 600  # 10 minutes
+    MOVIDESK_SYNC_INTERVAL: int = 300  # 5 minutes
     MOVIDESK_SYNC_ENABLED: bool = True
     MOVIDESK_WEBHOOK_AUTO_CREATE: bool = os.getenv("MOVIDESK_WEBHOOK_AUTO_CREATE", "false").lower() == "true"
     

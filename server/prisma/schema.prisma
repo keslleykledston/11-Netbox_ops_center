@@ -337,6 +337,19 @@ model NetboxPendingDevice {
   @@index([tenantNetboxId])
 }
 
+model NetboxWebhookLog {
+  id             Int      @id @default(autoincrement())
+  payload        String
+  tenantName     String?
+  tenantNetboxId Int?
+  deviceNetboxId Int?
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([tenantName])
+  @@index([tenantNetboxId])
+}
+
 // Snapshot de assets/hosts do JumpServer
 model JumpserverAssetSnapshot {
   id          Int      @id @default(autoincrement())

@@ -6,7 +6,7 @@ import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { LogViewer } from "@/components/LogViewer";
 import { useServiceHealth } from "@/hooks/use-service-health";
-import { Activity, Database, Server, Network, Layers, FileText } from "lucide-react";
+import { Activity, Database, Server, Network, Layers, FileText, RefreshCw } from "lucide-react";
 
 const Maintenance = () => {
   const { health } = useServiceHealth();
@@ -26,7 +26,13 @@ const Maintenance = () => {
   const [asnEdit, setAsnEdit] = useState<Record<number, string>>({});
   const [newAsn, setNewAsn] = useState("");
   const [newAsnName, setNewAsnName] = useState("");
+  const [webhookLogs, setWebhookLogs] = useState<any[]>([]);
+  const [webhookLoading, setWebhookLoading] = useState(false);
+  const [webhookError, setWebhookError] = useState("");
   const [logViewerOpen, setLogViewerOpen] = useState(false);
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateError, setUpdateError] = useState("");
   const load = async () => {
     try {
       const s = await api.adminSummary();
@@ -157,6 +163,42 @@ const Maintenance = () => {
     }
   };
 
+  const runUpdate = async () => {
+    setUpdateLoading(true);
+    setUpdateStatus("");
+    setUpdateError("");
+    try {
+      await api.adminRunUpdate();
+      setUpdateStatus("Atualização iniciada. A aplicação pode reiniciar em alguns instantes.");
+    } catch (e: any) {
+      setUpdateError(String(e?.message || e));
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
+
+  const loadWebhookLogs = async () => {
+    setWebhookLoading(true);
+    setWebhookError("");
+    try {
+      const logs = await api.adminNetboxWebhookLogs(3);
+      setWebhookLogs(Array.isArray(logs) ? logs : []);
+    } catch (e: any) {
+      setWebhookError(String(e?.message || e));
+      setWebhookLogs([]);
+    } finally {
+      setWebhookLoading(false);
+    }
+  };
+
+  const apiBase = import.meta.env.VITE_API_URL || "/api";
+  const normalizedBase = apiBase.startsWith("http")
+    ? apiBase
+    : apiBase.startsWith("/") ? apiBase : `/${apiBase}`;
+  const webhookUrl = typeof window !== "undefined"
+    ? new URL(`${normalizedBase.replace(/\/$/, "")}/webhooks/netbox`, window.location.origin).toString()
+    : `${normalizedBase.replace(/\/$/, "")}/webhooks/netbox`;
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -165,13 +207,28 @@ const Maintenance = () => {
             <h1 className="text-3xl font-bold text-foreground">Manutenção</h1>
             <p className="text-muted-foreground mt-2">Ferramentas administrativas de manutenção (escopo do seu tenant). Ações críticas exigem confirmação.</p>
           </div>
-          <Button
-            onClick={() => setLogViewerOpen(true)}
-            className="gap-2"
-          >
-            <FileText className="h-4 w-4" />
-            Logs
-          </Button>
+          <div className="flex flex-col items-end gap-2">
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                onClick={runUpdate}
+                className="gap-2"
+                disabled={updateLoading}
+              >
+                <RefreshCw className={`h-4 w-4 ${updateLoading ? "animate-spin" : ""}`} />
+                Update
+              </Button>
+              <Button
+                onClick={() => setLogViewerOpen(true)}
+                className="gap-2"
+              >
+                <FileText className="h-4 w-4" />
+                Logs
+              </Button>
+            </div>
+            {updateStatus && <div className="text-xs text-muted-foreground">{updateStatus}</div>}
+            {updateError && <div className="text-xs text-destructive">{updateError}</div>}
+          </div>
         </div>
 
         <LogViewer open={logViewerOpen} onOpenChange={setLogViewerOpen} />
@@ -362,6 +419,38 @@ const Maintenance = () => {
                     )}
                   </tbody>
                 </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Webhook NetBox</CardTitle>
+              <CardDescription>URL para apontar o NetBox e depuração dos últimos payloads recebidos.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <div className="text-sm font-medium">URL do webhook</div>
+                <Input readOnly value={webhookUrl} className="bg-zinc-800 text-white border-zinc-700" />
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={loadWebhookLogs} disabled={webhookLoading}>
+                  {webhookLoading ? "Carregando..." : "Depuração"}
+                </Button>
+                <span className="text-xs text-muted-foreground">Últimos 3 eventos (raw).</span>
+              </div>
+              {webhookError && (
+                <div className="text-xs text-destructive">{webhookError}</div>
+              )}
+              <div className="space-y-3">
+                {webhookLogs.length > 0 ? webhookLogs.map((log: any) => (
+                  <div key={log.id} className="border rounded p-2 bg-muted/30">
+                    <div className="text-xs text-muted-foreground">{new Date(log.createdAt).toLocaleString()}</div>
+                    <pre className="mt-2 text-xs whitespace-pre-wrap break-words">{log.payload}</pre>
+                  </div>
+                )) : (
+                  <div className="text-xs text-muted-foreground">Sem eventos recentes.</div>
+                )}
               </div>
             </CardContent>
           </Card>

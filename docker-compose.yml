@@ -64,6 +64,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     command: >-
       sh -lc "
+        if ! command -v git >/dev/null 2>&1 || ! command -v docker >/dev/null 2>&1 || ! command -v docker-compose >/dev/null 2>&1; then
+          apt-get update -qq && apt-get install -y -qq git docker.io docker-compose > /dev/null 2>&1;
+        fi &&
         if [ ! -d server/node_modules ]; then npm run server:install; fi &&
         npm --prefix server run prisma:generate &&
         migrate_ok=0;

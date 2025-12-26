@@ -3,6 +3,8 @@
 # Configuration
 LOG_FILE="update.log"
 VERSION_FILE="VERSION"
+LOCK_FILE=".update.lock"
+DOCKER_COMPOSE_CMD=""
 
 # Colors for output
 GREEN='\033[0;32m'
@@ -23,6 +25,14 @@ log "${YELLOW}Checking for updates...${NC}"
 # Ensure we are in the project directory
 cd "$(dirname "$0")"
 
+# Prevent concurrent updates
+if [ -f "$LOCK_FILE" ]; then
+    log "${YELLOW}Update already running. Remove $LOCK_FILE if this is stale.${NC}"
+    exit 1
+fi
+echo "$$" > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT
+
 # Check dependencies
 for cmd in git docker; do
     if ! command -v $cmd &> /dev/null; then
@@ -30,6 +40,15 @@ for cmd in git docker; do
         exit 1
     fi
 done
+
+if docker compose version >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+    DOCKER_COMPOSE_CMD="docker-compose"
+else
+    log "${RED}Error: docker compose not available.${NC}"
+    exit 1
+fi
 
 # Fetch latest changes from remote
 git fetch origin main
@@ -108,12 +127,12 @@ else
     
     # Pull latest images for external services (nginx, portainer, oxidized)
     log "   - Pulling latest images..."
-    docker compose pull
+    $DOCKER_COMPOSE_CMD pull
     
     # Rebuild app container if needed and restart services
     # 'up -d --build' will recreate containers only if config or image changed
     log "   - Restarting services..."
-    if docker compose up -d --build; then
+    if $DOCKER_COMPOSE_CMD up -d --build; then
         log "${GREEN}Containers updated and restarted successfully.${NC}"
     else
         log "${RED}Failed to update containers.${NC}"

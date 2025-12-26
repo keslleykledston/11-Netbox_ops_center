@@ -66,3 +66,4 @@ __pycache__/
 *.bak
 /tmp/
 update.log
+.update.lock

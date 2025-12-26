@@ -37,10 +37,13 @@ import { createSafeLogger } from "./modules/observability/log-sanitizer.js";
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { spawn } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const ENV_PATH = path.join(ROOT_DIR, '.env');
+const UPDATE_SCRIPT = path.join(ROOT_DIR, 'update.sh');
+const UPDATE_LOCK = path.join(ROOT_DIR, '.update.lock');
 
 const prisma = new PrismaClient();
 const app = express();
@@ -3709,10 +3712,26 @@ app.post("/webhooks/netbox", async (req, res) => {
     }
 
     const payload = req.body || {};
+    const payloadRaw = typeof payload === "string" ? payload : JSON.stringify(payload ?? null);
+    const data = payload?.data || payload?.object || null;
+    const tenantNetboxId = data?.tenant?.id || null;
+    const tenantName = data?.tenant?.name || null;
+    const deviceNetboxId = data?.id || null;
+    try {
+      await prisma.netboxWebhookLog.create({
+        data: {
+          payload: payloadRaw,
+          tenantName,
+          tenantNetboxId,
+          deviceNetboxId,
+        },
+      });
+    } catch (err) {
+      console.warn("[NetBox][WARN] Failed to log webhook payload:", err?.message || err);
+    }
     const modelRaw = String(payload?.model || "").toLowerCase();
     const model = modelRaw.includes("device") ? "device" : modelRaw;
     const event = String(payload?.event || "").toLowerCase();
-    const data = payload?.data || payload?.object || null;
 
     if (!data || (model && model !== "device")) {
       return res.json({ ok: true, ignored: true, model, event });
@@ -3723,8 +3742,6 @@ app.post("/webhooks/netbox", async (req, res) => {
     }
 
     const ip = data.primary_ip?.address?.split("/")?.[0] || data.primary_ip4?.address?.split("/")?.[0] || null;
-    const tenantNetboxId = data.tenant?.id || null;
-    const tenantName = data.tenant?.name || null;
     const siteNetboxId = data.site?.id || null;
     const platform = data.platform?.slug || data.platform?.name || null;
     const cf = data.custom_fields || {};
@@ -3954,6 +3971,35 @@ app.get("/stats/host", requireAuth, async (_req, res) => {
       },
       uptimeSeconds: os.uptime(),
     });
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: trigger update script (git pull + restart stack)
+app.post("/admin/update", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    try {
+      await fs.access(UPDATE_SCRIPT);
+    } catch {
+      return res.status(404).json({ error: "update.sh não encontrado" });
+    }
+
+    try {
+      await fs.access(UPDATE_LOCK);
+      return res.status(409).json({ error: "Atualização já em execução." });
+    } catch {
+      // lock not present
+    }
+
+    const child = spawn("bash", [UPDATE_SCRIPT], {
+      cwd: ROOT_DIR,
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+    await logAudit(req, "update", { pid: child.pid });
+    res.json({ ok: true, pid: child.pid, startedAt: new Date().toISOString() });
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });
   }
@@ -4288,6 +4334,31 @@ app.get("/admin/audit", requireAuth, async (req, res) => {
       if (to) where.createdAt.lte = new Date(String(to));
     }
     const logs = await prisma.auditLog.findMany({ where, orderBy: { createdAt: "desc" }, take: Number(limit) || 50 });
+    res.json(logs);
+  } catch (e) {
+    res.status(500).json({ error: String(e?.message || e) });
+  }
+});
+
+// Admin: list recent NetBox webhook payloads (raw)
+app.get("/admin/netbox-webhook-logs", requireAuth, async (req, res) => {
+  try {
+    const limitRaw = Number(req.query?.limit || 3);
+    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 50) : 3;
+    const where = {};
+
+    if (req.user.role !== "admin") {
+      if (!req.user.tenantId) return res.json([]);
+      const tenant = await prisma.tenant.findUnique({ where: { id: req.user.tenantId } });
+      if (!tenant?.name) return res.json([]);
+      where.tenantName = tenant.name;
+    }
+
+    const logs = await prisma.netboxWebhookLog.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+    });
     res.json(logs);
   } catch (e) {
     res.status(500).json({ error: String(e?.message || e) });

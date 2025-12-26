@@ -196,6 +196,9 @@ export const api = {
   async adminSnapshot() {
     return apiFetch(`/admin/snapshot`, { method: "GET" });
   },
+  async adminRunUpdate() {
+    return apiFetch(`/admin/update`, { method: "POST" });
+  },
   async adminImportSnapshot(data: any, options: { importTenants?: boolean; importDevices?: boolean; importApplications?: boolean; importDiscoveries?: boolean; overwriteTenants?: boolean; overwriteDevices?: boolean; overwriteApplications?: boolean; overwriteDiscoveries?: boolean }) {
     return apiFetch(`/admin/import-snapshot`, { method: "POST", body: JSON.stringify({ data, options }) });
   },
@@ -207,6 +210,10 @@ export const api = {
     if (params?.limit) q.set('limit', String(params.limit));
     const qs = q.toString();
     return apiFetch(`/admin/audit${qs ? `?${qs}` : ''}`, { method: "GET" });
+  },
+  async adminNetboxWebhookLogs(limit: number = 3) {
+    const qs = limit ? `?limit=${limit}` : "";
+    return apiFetch(`/admin/netbox-webhook-logs${qs}`, { method: "GET" });
   },
   async listTenants() {
     return apiFetch(`/tenants`, { method: "GET" });

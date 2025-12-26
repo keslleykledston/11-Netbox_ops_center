@@ -123,6 +123,7 @@ function buildJumpserverProxyHost() {
 
 function resolveJumpserverSshMode() {
   const raw = String(process.env.JUMPSERVER_SSH_MODE || 'direct').toLowerCase().trim();
+  if (raw === 'token') return 'token';
   return raw === 'proxy' ? 'proxy' : 'direct';
 }
 
@@ -142,6 +143,193 @@ function buildJumpserverLogin({ username, assetId, systemUser, deviceName }) {
   }
   value = value.replace(/@{2,}/g, '@').replace(/@$/g, '').trim();
   return value || baseUser;
+}
+
+const JUMPSERVER_TOKEN_EXPIRY_SKEW_MS = 30 * 1000;
+const JUMPSERVER_TOKEN_DEFAULT_TTL_MS = 55 * 60 * 1000;
+const jumpserverTokenCache = new Map();
+const jumpserverUserCache = new Map();
+
+function normalizeEpochMs(value) {
+  if (value === null || value === undefined) return null;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (Number.isFinite(numeric)) {
+    if (numeric > 1e12) return numeric;
+    if (numeric > 1e9) return numeric * 1000;
+    if (numeric > 0) return Date.now() + numeric * 1000;
+    return null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function resolveJumpserverTokenExpiresAt(tokenData) {
+  if (!tokenData) return Date.now() + JUMPSERVER_TOKEN_DEFAULT_TTL_MS;
+  const candidates = [
+    tokenData.expiresAt,
+    tokenData.expires_at,
+    tokenData.expired_at,
+    tokenData.expire_at,
+    tokenData.expire_time,
+    tokenData.expires,
+    tokenData.expires_in,
+    tokenData.expire_in,
+  ];
+  for (const candidate of candidates) {
+    const resolved = normalizeEpochMs(candidate);
+    if (resolved) return resolved;
+  }
+  return Date.now() + JUMPSERVER_TOKEN_DEFAULT_TTL_MS;
+}
+
+function readJumpserverTokenCache(cacheKey) {
+  if (!cacheKey) return null;
+  const entry = jumpserverTokenCache.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAt && Date.now() >= entry.expiresAt - JUMPSERVER_TOKEN_EXPIRY_SKEW_MS) {
+    jumpserverTokenCache.delete(cacheKey);
+    return null;
+  }
+  return entry;
+}
+
+function writeJumpserverTokenCache(cacheKey, entry) {
+  if (!cacheKey || !entry?.token || !entry?.secret) return;
+  jumpserverTokenCache.set(cacheKey, entry);
+}
+
+function buildJumpserverTokenCacheKey({ tenantId, assetId, systemUserId, userId, username }) {
+  const parts = [
+    tenantId ? String(tenantId) : 'default',
+    assetId || '',
+    systemUserId || '',
+    userId || username || '',
+  ];
+  return parts.join('::');
+}
+
+function parseJumpserverAppConfig(app) {
+  let cfg = {};
+  if (app?.config) {
+    try {
+      cfg = JSON.parse(app.config);
+    } catch {
+      cfg = {};
+    }
+  }
+  return {
+    organizationId: cfg.organizationId || null,
+    username: cfg.username || null,
+    password: cfg.password || null,
+    defaultSystemUser: cfg.defaultSystemUser || cfg.systemUser || null,
+    tokenUserId: cfg.tokenUserId || cfg.userId || null,
+    tokenUser: cfg.tokenUser || null,
+  };
+}
+
+function resolveJumpserverTokenUser(appConfig, fallbackUser) {
+  const tokenUserId = appConfig?.tokenUserId
+    || process.env.JUMPSERVER_TOKEN_USER_ID
+    || process.env.JUMPSERVER_USER_ID
+    || null;
+  const tokenUser = appConfig?.tokenUser
+    || appConfig?.username
+    || process.env.JUMPSERVER_TOKEN_USER
+    || process.env.JUMPSERVER_USERNAME
+    || fallbackUser
+    || null;
+  return { tokenUserId, tokenUser };
+}
+
+function resolveJumpserverDefaultSystemUser(appConfig, fallbackUser) {
+  return appConfig?.defaultSystemUser
+    || process.env.JUMPSERVER_SYSTEM_USER
+    || process.env.JUMPSERVER_DEFAULT_SYSTEM_USER
+    || fallbackUser
+    || null;
+}
+
+async function resolveJumpserverTokenUserId({ client, tokenUserId, tokenUser }) {
+  if (tokenUserId) return tokenUserId;
+  if (!client || !tokenUser) return null;
+  const cacheKey = `${client.baseUrl}::${tokenUser}`;
+  if (jumpserverUserCache.has(cacheKey)) {
+    return jumpserverUserCache.get(cacheKey);
+  }
+  try {
+    const user = await client.findUserByUsername(tokenUser);
+    const resolved = user?.id || null;
+    if (resolved) {
+      jumpserverUserCache.set(cacheKey, resolved);
+      return resolved;
+    }
+  } catch {
+    // Ignore user lookup errors, we'll fallback to username.
+  }
+  return tokenUser;
+}
+
+async function resolveJumpserverConnectionToken({ client, cacheKey, userId, assetId, systemUserId }) {
+  const cached = readJumpserverTokenCache(cacheKey);
+  if (cached) return cached;
+  if (!client || !userId || !assetId || !systemUserId) return null;
+  const tokenData = await client.requestConnectionToken({ userId, assetId, systemUserId });
+  if (!tokenData?.token || !tokenData?.secret) return null;
+  const expiresAt = resolveJumpserverTokenExpiresAt(tokenData);
+  const entry = { token: tokenData.token, secret: tokenData.secret, expiresAt };
+  writeJumpserverTokenCache(cacheKey, entry);
+  return entry;
+}
+
+async function loadJumpserverContexts() {
+  const contexts = new Map();
+  const apps = await prisma.application.findMany({
+    where: { name: { contains: 'jumpserver', mode: 'insensitive' } },
+    orderBy: { updatedAt: 'desc' },
+  });
+  for (const appRow of apps) {
+    const key = appRow.tenantId ? String(appRow.tenantId) : 'default';
+    if (contexts.has(key)) continue;
+    const cfg = parseJumpserverAppConfig(appRow);
+    const client = new JumpserverClient({
+      baseUrl: appRow.url,
+      apiToken: appRow.apiKey,
+      organizationId: cfg.organizationId,
+      username: cfg.username,
+      password: cfg.password,
+    });
+    contexts.set(key, { client, config: cfg });
+  }
+
+  if (!contexts.has('default') && DEFAULT_JUMP_API_URL && DEFAULT_JUMP_API_TOKEN) {
+    const cfg = {
+      organizationId: process.env.JUMPSERVER_ORGANIZATION_ID || null,
+      username: DEFAULT_JUMP_CREDENTIALS.username || null,
+      password: DEFAULT_JUMP_CREDENTIALS.password || null,
+      defaultSystemUser: null,
+      tokenUserId: null,
+      tokenUser: DEFAULT_JUMP_CREDENTIALS.username || null,
+    };
+    const client = new JumpserverClient({
+      baseUrl: DEFAULT_JUMP_API_URL,
+      apiToken: DEFAULT_JUMP_API_TOKEN,
+      organizationId: cfg.organizationId,
+      username: cfg.username,
+      password: cfg.password,
+    });
+    contexts.set('default', { client, config: cfg });
+  }
+
+  return contexts;
+}
+
+function resolveJumpserverContext(contexts, tenantId) {
+  if (!contexts) return null;
+  const key = tenantId ? String(tenantId) : 'default';
+  return contexts.get(key) || contexts.get('default') || null;
 }
 
 const normalizeFieldKey = (key) => String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -1816,6 +2004,7 @@ app.get('/oxidized/nodes', async (req, res) => {
     const jumpserverMode = resolveJumpserverSshMode();
     const jumpserverUsername = String(process.env.JUMPSERVER_SSH_USERNAME || process.env.JUMPSERVER_USERNAME || '').trim();
     const jumpserverPassword = String(process.env.JUMPSERVER_PASSWORD || '').trim();
+    const jumpserverContexts = jumpserverMode === 'token' ? await loadJumpserverContexts() : null;
     const devices = await prisma.device.findMany({
       where: { backupEnabled: true },
       select: {
@@ -1831,16 +2020,18 @@ app.get('/oxidized/nodes', async (req, res) => {
         jumpserverAssetId: true,
         jumpserverId: true,
         jumpserverSystemUser: true,
+        tenantId: true,
         tenant: { select: { name: true, tenantGroup: true } }
       }
     });
 
-    const nodes = devices.map(d => {
+    const nodes = await Promise.all(devices.map(async (d) => {
       const group = d.tenant?.tenantGroup || d.tenant?.name || 'default';
       const assetId = d.jumpserverAssetId || d.jumpserverId || null;
       const shouldUseJumpserver = Boolean(d.useJumpserver || assetId);
       const jumpserverReady = shouldUseJumpserver && jumpserverHost;
       const useDirectJumpserver = jumpserverReady && jumpserverMode === 'direct' && assetId;
+      const useTokenJumpserver = jumpserverReady && jumpserverMode === 'token' && assetId;
       const useProxyJumpserver = jumpserverReady && jumpserverMode === 'proxy';
 
       let ip = d.ipAddress;
@@ -1850,7 +2041,39 @@ app.get('/oxidized/nodes', async (req, res) => {
       let sshProxy = null;
       let sshProxyPort = null;
 
-      if (useDirectJumpserver) {
+      if (useTokenJumpserver) {
+        const context = resolveJumpserverContext(jumpserverContexts, d.tenantId);
+        const appConfig = context?.config || null;
+        const tokenUserInfo = resolveJumpserverTokenUser(appConfig, jumpserverUsername || username);
+        const systemUserId = d.jumpserverSystemUser || resolveJumpserverDefaultSystemUser(appConfig, 'default');
+        const resolvedUserId = await resolveJumpserverTokenUserId({
+          client: context?.client,
+          tokenUserId: tokenUserInfo.tokenUserId,
+          tokenUser: tokenUserInfo.tokenUser,
+        });
+        const tokenCacheKey = buildJumpserverTokenCacheKey({
+          tenantId: d.tenantId,
+          assetId,
+          systemUserId,
+          userId: resolvedUserId,
+          username: tokenUserInfo.tokenUser,
+        });
+        const tokenEntry = await resolveJumpserverConnectionToken({
+          client: context?.client,
+          cacheKey: tokenCacheKey,
+          userId: resolvedUserId || tokenUserInfo.tokenUser,
+          assetId,
+          systemUserId,
+        });
+        if (tokenEntry?.token && tokenEntry?.secret) {
+          ip = jumpserverHost;
+          sshPort = jumpserverPort;
+          username = tokenEntry.token;
+          password = tokenEntry.secret;
+        } else {
+          console.warn(`[OXIDIZED][WARN] Token Jumpserver indisponível para ${d.name}`);
+        }
+      } else if (useDirectJumpserver) {
         ip = jumpserverHost;
         sshPort = jumpserverPort;
         username = buildJumpserverLogin({
@@ -1875,7 +2098,7 @@ app.get('/oxidized/nodes', async (req, res) => {
         ssh_proxy: sshProxy,
         ssh_proxy_port: sshProxyPort
       };
-    });
+    }));
 
     res.json(nodes);
   } catch (e) {

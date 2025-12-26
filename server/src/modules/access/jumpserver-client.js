@@ -89,6 +89,42 @@ function resolveExpiresAtMs(loginResponse, token) {
     return now + DEFAULT_TOKEN_TTL_MS;
 }
 
+function normalizeEpochMs(value) {
+    if (value === null || value === undefined) return null;
+    const numeric = typeof value === 'number' ? value : Number(value);
+    if (Number.isFinite(numeric)) {
+        if (numeric > 1e12) return numeric;
+        if (numeric > 1e9) return numeric * 1000;
+        if (numeric > 0) return Date.now() + numeric * 1000;
+        return null;
+    }
+    if (typeof value === 'string') {
+        const parsed = Date.parse(value);
+        if (!Number.isNaN(parsed)) return parsed;
+    }
+    return null;
+}
+
+function resolveConnectionTokenExpiryMs(response) {
+    if (!response) return null;
+    const candidates = [
+        response.expiresAt,
+        response.expires_at,
+        response.expired_at,
+        response.expire_at,
+        response.expire_time,
+        response.expireTime,
+        response.expires,
+        response.expires_in,
+        response.expire_in,
+    ];
+    for (const candidate of candidates) {
+        const resolved = normalizeEpochMs(candidate);
+        if (resolved) return resolved;
+    }
+    return null;
+}
+
 async function readCachedToken(cacheKey) {
     if (!cacheKey) return null;
     const entry = tokenCache.get(cacheKey);
@@ -428,6 +464,24 @@ export class JumpserverClient {
     }
 
     /**
+     * Resolve a Jumpserver user by username or email
+     */
+    async findUserByUsername(username, { limit = 20 } = {}) {
+        if (!username) return null;
+        const params = new URLSearchParams({ search: username, limit });
+        const response = await this.request(`/api/v1/users/users/?${params}`);
+        const list = response?.results || response;
+        if (!Array.isArray(list) || list.length === 0) return null;
+        const normalized = String(username).toLowerCase();
+        const exact = list.find((user) => {
+            const userName = String(user?.username || '').toLowerCase();
+            const email = String(user?.email || '').toLowerCase();
+            return userName === normalized || email === normalized;
+        });
+        return exact || list[0];
+    }
+
+    /**
      * Request a connection token for a SSH session
      * This token is used to establish WebSocket connection to Koko
      */
@@ -447,6 +501,7 @@ export class JumpserverClient {
             token: response.id || response.token,
             secret: response.secret,
             url: `${this.baseUrl}/koko/token/?target_id=${response.id}`,
+            expiresAt: resolveConnectionTokenExpiryMs(response),
         };
     }
 

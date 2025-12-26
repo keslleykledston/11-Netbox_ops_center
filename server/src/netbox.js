@@ -645,7 +645,8 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
       // Check both lowercase and capitalized just in case, and specific keys found in JSON
       const backupEnabled = !!(cf["Backup"] || cf["backup"]);
       const isProduction = !!(cf["Production"] || cf["production"]);
-      const jumpserverId = cf["ID do Dispositivo no JumpServer"] || cf["ID do Jumpserver"] || cf["id_do_dispositivo_no_jumpserver"] || cf["jumpserver_id"] || cf["JS_DEVICE_ID"] || null;
+      const jumpserverIdRaw = cf["ID do Dispositivo no JumpServer"] || cf["ID do Jumpserver"] || cf["id_do_dispositivo_no_jumpserver"] || cf["jumpserver_id"] || cf["JS_DEVICE_ID"] || null;
+      const jumpserverId = jumpserverIdRaw ? String(jumpserverIdRaw) : null;
       const snmpCommunityCf = cf["SNMP Community"] || cf["snmpCommunity"] || cf["snmp_community"] || cf["snmpcommunity"] || null;
       const snmpPortCf = cf["SNMP Port"] || cf["snmpPort"] || cf["snmp_port"] || null;
 
@@ -770,6 +771,7 @@ export async function syncFromNetbox(prisma, { url, token, resources = ["tenants
         backupEnabled,
         isProduction,
         jumpserverId,
+        ...(jumpserverId ? { jumpserverAssetId: jumpserverId, useJumpserver: true } : {}),
         customData: JSON.stringify(cf),
         sshPort, // Use the port extracted from Services or Custom Fields
       };
@@ -990,7 +992,8 @@ export async function syncSingleDeviceFromNetbox(prisma, { url, token, deviceId,
   const cf = d.custom_fields || {};
   const backupEnabled = !!(cf["Backup"] || cf["backup"]);
   const isProduction = !!(cf["Production"] || cf["production"]);
-  const jumpserverId = cf["ID do Dispositivo no JumpServer"] || cf["ID do Jumpserver"] || cf["id_do_dispositivo_no_jumpserver"] || cf["jumpserver_id"] || cf["JS_DEVICE_ID"] || null;
+  const jumpserverIdRaw = cf["ID do Dispositivo no JumpServer"] || cf["ID do Jumpserver"] || cf["id_do_dispositivo_no_jumpserver"] || cf["jumpserver_id"] || cf["JS_DEVICE_ID"] || null;
+  const jumpserverId = jumpserverIdRaw ? String(jumpserverIdRaw) : null;
   const snmpCommunityCf = cf["SNMP Community"] || cf["snmpCommunity"] || cf["snmp_community"] || cf["snmpcommunity"] || null;
   const snmpPortCf = cf["SNMP Port"] || cf["snmpPort"] || cf["snmp_port"] || null;
 
@@ -1095,6 +1098,7 @@ export async function syncSingleDeviceFromNetbox(prisma, { url, token, deviceId,
     backupEnabled,
     isProduction,
     jumpserverId,
+    ...(jumpserverId ? { jumpserverAssetId: jumpserverId, useJumpserver: true } : {}),
     customData: JSON.stringify(cf),
     sshPort,
   };

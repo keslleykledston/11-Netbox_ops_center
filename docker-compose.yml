@@ -231,6 +231,9 @@ services:
       - ./docker/oxidized-custom-models:/home/oxidized/.config/oxidized/model:ro
     environment:
       - CONFIG_RELOAD_INTERVAL=600
+      - SSH_ASKPASS=/home/oxidized/.config/oxidized/ssh-askpass.sh
+      - SSH_ASKPASS_REQUIRE=force
+      - DISPLAY=:0
     networks:
       - netbox-net
     restart: unless-stopped

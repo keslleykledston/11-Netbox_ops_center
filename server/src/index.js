@@ -90,6 +90,60 @@ const DEFAULT_JUMP_CREDENTIALS = {
   password: process.env.JUMPSERVER_PASSWORD || "",
 };
 
+function resolveJumpserverSshPort() {
+  const raw = process.env.JUMPSERVER_SSH_PORT || process.env.JUMPSERVER_PORT;
+  const parsed = Number(raw);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return 2222;
+}
+
+function extractHostnameFromUrl(raw) {
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    return parsed.hostname || '';
+  } catch {
+    const trimmed = String(raw || '').replace(/^[a-z]+:\/\//i, '').split('/')[0];
+    return trimmed.replace(/^\\[|\\]$/g, '').split(':')[0];
+  }
+}
+
+function resolveJumpserverSshHost() {
+  const direct = process.env.JUMPSERVER_SSH_HOST || process.env.JUMPSERVER_HOST;
+  if (direct) return direct;
+  return extractHostnameFromUrl(process.env.JUMPSERVER_URL || '');
+}
+
+function buildJumpserverProxyHost() {
+  const host = resolveJumpserverSshHost();
+  if (!host) return null;
+  const user = String(process.env.JUMPSERVER_SSH_USERNAME || process.env.JUMPSERVER_USERNAME || '').trim();
+  return user ? `${user}@${host}` : host;
+}
+
+function resolveJumpserverSshMode() {
+  const raw = String(process.env.JUMPSERVER_SSH_MODE || 'direct').toLowerCase().trim();
+  return raw === 'proxy' ? 'proxy' : 'direct';
+}
+
+function buildJumpserverLogin({ username, assetId, systemUser, deviceName }) {
+  const baseUser = String(username || '').trim();
+  if (!assetId) return baseUser;
+  const template = String(process.env.JUMPSERVER_SSH_LOGIN_FORMAT || '{username}@{assetId}');
+  const replacements = {
+    username: baseUser,
+    assetId: String(assetId || '').trim(),
+    systemUser: String(systemUser || '').trim(),
+    deviceName: String(deviceName || '').trim(),
+  };
+  let value = template;
+  for (const [key, replacement] of Object.entries(replacements)) {
+    value = value.replace(new RegExp(`\\{${key}\\}`, 'g'), replacement);
+  }
+  value = value.replace(/@{2,}/g, '@').replace(/@$/g, '').trim();
+  return value || baseUser;
+}
+
 const normalizeFieldKey = (key) => String(key || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const jumpserverFieldCandidates = new Set([
   'id do dispositivo no jumpserver',
@@ -859,6 +913,37 @@ async function ensureDefaultJumpserverApp() {
   }
 }
 
+async function refreshJumpserverEnvFromDb() {
+  try {
+    const tenant = await prisma.tenant.findUnique({ where: { name: 'default' } });
+    if (!tenant) return;
+    const app = await prisma.application.findFirst({
+      where: {
+        tenantId: tenant.id,
+        name: { contains: 'jumpserver', mode: 'insensitive' },
+      },
+      orderBy: { id: 'desc' },
+    });
+    if (!app) return;
+    const updates = buildEnvUpdatesFromApplication({
+      name: app.name,
+      url: app.url,
+      apiKey: app.apiKey,
+      config: app.config,
+    });
+    if (Object.keys(updates).length === 0) return;
+    Object.assign(process.env, updates);
+    await persistApplicationEnv({
+      name: app.name,
+      url: app.url,
+      apiKey: app.apiKey,
+      config: app.config,
+    });
+  } catch (err) {
+    console.warn('[ENV][WARN] Failed to refresh Jumpserver env from DB:', err?.message || err);
+  }
+}
+
 async function ensureDefaultMovideskApp() {
   try {
     const tenant = await prisma.tenant.findUnique({ where: { name: 'default' } });
@@ -1012,6 +1097,7 @@ function startNetboxPendingScheduler() {
 
 async function bootstrapBackground() {
   await ensureDefaultBootstrap();
+  await refreshJumpserverEnvFromDb();
   // Kick off ASN refresh in background (non-blocking)
   refreshAsnRegistryFromPeers();
   syncRouterDbFromDb();
@@ -1724,6 +1810,12 @@ app.get('/backup/devices/:id/versions', requireAuth, async (req, res) => {
 // Oxidized HTTP Source Endpoint
 app.get('/oxidized/nodes', async (req, res) => {
   try {
+    const jumpserverProxyHost = buildJumpserverProxyHost();
+    const jumpserverHost = resolveJumpserverSshHost();
+    const jumpserverPort = resolveJumpserverSshPort();
+    const jumpserverMode = resolveJumpserverSshMode();
+    const jumpserverUsername = String(process.env.JUMPSERVER_SSH_USERNAME || process.env.JUMPSERVER_USERNAME || '').trim();
+    const jumpserverPassword = String(process.env.JUMPSERVER_PASSWORD || '').trim();
     const devices = await prisma.device.findMany({
       where: { backupEnabled: true },
       select: {
@@ -1735,20 +1827,53 @@ app.get('/oxidized/nodes', async (req, res) => {
         credUsername: true,
         credPasswordEnc: true,
         sshPort: true,
+        useJumpserver: true,
+        jumpserverAssetId: true,
+        jumpserverId: true,
+        jumpserverSystemUser: true,
         tenant: { select: { name: true, tenantGroup: true } }
       }
     });
 
     const nodes = devices.map(d => {
       const group = d.tenant?.tenantGroup || d.tenant?.name || 'default';
+      const assetId = d.jumpserverAssetId || d.jumpserverId || null;
+      const shouldUseJumpserver = Boolean(d.useJumpserver || assetId);
+      const jumpserverReady = shouldUseJumpserver && jumpserverHost;
+      const useDirectJumpserver = jumpserverReady && jumpserverMode === 'direct' && assetId;
+      const useProxyJumpserver = jumpserverReady && jumpserverMode === 'proxy';
+
+      let ip = d.ipAddress;
+      let sshPort = d.sshPort || 22;
+      let username = d.credUsername;
+      let password = d.credPasswordEnc ? decryptSecret(d.credPasswordEnc) : null;
+      let sshProxy = null;
+      let sshProxyPort = null;
+
+      if (useDirectJumpserver) {
+        ip = jumpserverHost;
+        sshPort = jumpserverPort;
+        username = buildJumpserverLogin({
+          username: jumpserverUsername || username,
+          assetId,
+          systemUser: d.jumpserverSystemUser,
+          deviceName: d.name,
+        });
+        if (jumpserverPassword) password = jumpserverPassword;
+      } else if (useProxyJumpserver && jumpserverProxyHost) {
+        sshProxy = jumpserverProxyHost;
+        sshProxyPort = jumpserverPort;
+      }
       return {
         name: d.name,
-        ip: d.ipAddress,
-        model: d.platform || 'routeros', // Use platform (driver) or default to routeros
+        ip,
+        model: normalizeOxidizedModel(d.platform || '', 'routeros'),
         group: group,
-        username: d.credUsername,
-        password: d.credPasswordEnc ? decryptSecret(d.credPasswordEnc) : null,
-        ssh_port: d.sshPort || 22
+        username,
+        password,
+        ssh_port: sshPort,
+        ssh_proxy: sshProxy,
+        ssh_proxy_port: sshProxyPort
       };
     });
 
@@ -1995,16 +2120,43 @@ async function proxyAuth(req, res, next) {
 }
 
 // Mapeamento de plataformas NetBox para Oxidized
-function mapPlatformToOxidized(platform) {
+function normalizeOxidizedModel(platform, fallback = "routeros") {
+  const key = String(platform || "").toLowerCase().trim();
+  if (!key) return fallback;
   const map = {
     "mikrotik-routeros": "routeros",
+    "mikrotik": "routeros",
+    "routeros": "routeros",
     "huawei-vrp": "vrp",
     "cisco-ios": "ios",
     "cisco-iosxe": "iosxe",
     "juniper-junos": "junos",
-    "fortinet-fortios": "fortios"
+    "fortinet-fortios": "fortios",
+    "ubiqui": "airos",
+    "ubiquiti": "airos",
+    "airos": "airos",
+    "airfiber": "airfiber",
+    "linux": "linuxgeneric",
+    "linuxgeneric": "linuxgeneric",
+    "linux-generic": "linuxgeneric",
+    "proxmox": "linuxgeneric",
+    "vmware-esxi": "linuxgeneric",
+    "esxi": "linuxgeneric",
+    "vmware": "linuxgeneric"
   };
-  return map[platform] || "ios";
+  if (map[key]) return map[key];
+  if (key.includes("routeros") || key.includes("mikrotik")) return "routeros";
+  if (key.includes("ubiqui")) return "airos";
+  if (key.includes("airfiber")) return "airfiber";
+  if (key.includes("linux") || key.includes("proxmox") || key.includes("vmware") || key.includes("esxi")) return "linuxgeneric";
+  if (key.includes("ios")) return "ios";
+  if (key.includes("junos")) return "junos";
+  if (key.includes("forti")) return "fortios";
+  return key;
+}
+
+function mapPlatformToOxidized(platform) {
+  return normalizeOxidizedModel(platform, "ios");
 }
 
 // Função para notificar proxies Oxidized sobre mudanças

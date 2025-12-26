@@ -25,6 +25,28 @@ function sanitizeField(value) {
         .trim();
 }
 
+function shellQuote(value) {
+    return `'${String(value ?? '').replace(/'/g, `'\"'\"'`)}'`;
+}
+
+async function ensureJumpserverAskpassScript() {
+    const password = String(process.env.JUMPSERVER_PASSWORD || '').trim();
+    if (!password) return;
+    const askpassPath = path.join(CONFIG_DIR, 'ssh-askpass.sh');
+    const content = `#!/bin/sh\nprintf %s ${shellQuote(password)}\n`;
+    try {
+        const uid = Number(process.env.OXIDIZED_UID || 30000);
+        const gid = Number(process.env.OXIDIZED_GID || uid);
+        await fs.writeFile(askpassPath, content, { mode: 0o700 });
+        await fs.chmod(askpassPath, 0o700);
+        if (Number.isFinite(uid) && Number.isFinite(gid)) {
+            await fs.chown(askpassPath, uid, gid);
+        }
+    } catch (err) {
+        console.warn('[OXIDIZED] Failed to write SSH_ASKPASS script:', err?.message || err);
+    }
+}
+
 export function guessModel(device) {
     const model = String(device.model || '').toLowerCase();
     const vendor = String(device.manufacturer || '').toLowerCase();
@@ -150,6 +172,7 @@ export async function ensureOxidizedConfig(force = false) {
         console.log(`[OXIDIZED] ${force ? 'Regenerating' : 'Generating'} config...`);
         await fs.mkdir(CONFIG_DIR, { recursive: true });
         await fs.mkdir(path.join(CONFIG_DIR, 'git-repos'), { recursive: true });
+        await ensureJumpserverAskpassScript();
 
         const defaultConfig = `---
 username: username
@@ -203,6 +226,8 @@ source:
       password: password
     vars_map:
       ssh_port: ssh_port
+      ssh_proxy: ssh_proxy
+      ssh_proxy_port: ssh_proxy_port
     gpg: false
   netbox:
     url: "${process.env.NETBOX_URL || 'http://netbox:8000'}"
